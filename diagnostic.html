@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Diagnostic Test</title>
+</head>
+
+<body>
+    <h1>Cache & Load Test</h1>
+    <div id="output"></div>
+
+    <script>
+        const output = document.getElementById('output');
+
+        function log(msg) {
+            output.innerHTML += `<div>${msg}</div>`;
+            console.log(msg);
+        }
+
+        // Test 1: Check localStorage
+        log("=== CACHE TEST ===");
+        const cache = localStorage.getItem('stockDataCache');
+        if (cache) {
+            const parsed = JSON.parse(cache);
+            log(`✅ Cache exists with ${Object.keys(parsed).length} items`);
+            Object.keys(parsed).forEach(key => {
+                const age = Date.now() - parsed[key].timestamp;
+                log(`  - ${key}: ${(age / 1000).toFixed(0)}s old`);
+            });
+        } else {
+            log("❌ No cache found");
+        }
+
+        // Test 2: Test API call
+        log("<br>=== API TEST ===");
+        log("Testing fetch to Yahoo Finance...");
+
+        const testSymbol = 'GOOG';
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${testSymbol}?interval=1d&range=1mo`;
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+
+        const startTime = Date.now();
+        fetch(proxyUrl)
+            .then(res => res.json())
+            .then(data => {
+                const elapsed = Date.now() - startTime;
+                log(`✅ API call succeeded in ${elapsed}ms`);
+                if (data.chart && data.chart.result) {
+                    log(`  - Got ${data.chart.result[0].timestamp.length} data points`);
+                }
+            })
+            .catch(err => {
+                const elapsed = Date.now() - startTime;
+                log(`❌ API call failed after ${elapsed}ms: ${err.message}`);
+            });
+    </script>
+</body>
+
+</html>

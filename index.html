@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LimitLevel | Smart Stock Entry</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="ignition.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="glass-header">
+            <div class="logo" id="logoBtn" style="cursor: pointer;">
+                <div class="logo-icon"></div>
+                <h1>LimitLevel</h1>
+            </div>
+            <div class="search-container">
+                <input type="text" id="stockSearch" placeholder="Search ticker (e.g. AAPL)..." autocomplete="off">
+                <button id="refreshBtn" title="Force Refresh" style="margin-right: 8px;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6"></path>
+                        <path d="M1 20v-6h6"></path>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                </button>
+                <button id="searchBtn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                </button>
+            </div>
+            <div id="lastUpdated"
+                style="position: absolute; bottom: -25px; right: 32px; font-size: 11px; color: var(--text-muted);">
+            </div>
+        </header>
+
+        <!-- DASHBOARD VIEW -->
+        <main id="dashboardView" class="dashboard-view">
+            <!-- Command Center -->
+            <div class="glass-panel command-center-container">
+                <!-- Analyst Commentary -->
+                <div id="analystCommentary" class="commentary-section">
+                    <div class="commentary-header">
+                        <span class="pulse-dot"></span>
+                        <h4>LIVE MARKET ANALYSIS</h4>
+                    </div>
+                    <p id="commentaryText">Initializing market scan...</p>
+                </div>
+
+                <div class="command-center-grid">
+                    <!-- STOCKS COLUMN -->
+                    <div class="command-column">
+                        <h2 class="column-title">STOCKS</h2>
+
+                        <!-- Global Ignition (Stocks) -->
+                        <div id="ignitionStatus" class="ignition-status-card">
+                            <div class="ignition-header">
+                                <span class="status-indicator" id="ignitionIndicator"></span>
+                                <h3 id="ignitionState">STOCKS MELTUP IGNITION</h3>
+                            </div>
+                            <div class="ignition-details">
+                                <div class="detail-item">
+                                    <span class="label">Price</span>
+                                    <span class="value" id="ignPrice">--</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="label">Volume</span>
+                                    <span class="value" id="ignVol">--</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="label">Breadth</span>
+                                    <span class="value" id="ignBreadth">--</span>
+                                </div>
+                            </div>
+                            <div class="ignition-action hidden" id="ignitionAction">
+                                ⚠️ <strong>IGNITION ACTIVE:</strong> Force deploy to 80% exposure immediately.
+                            </div>
+                        </div>
+
+                        <!-- Stock Meltup Exits -->
+                        <div id="stocksExit" class="ignition-status-card">
+                            <div class="ignition-header">
+                                <h3>STOCKS MELTUP EXITS</h3>
+                            </div>
+                            <div class="stock-exit-list">
+                                <div class="stock-exit-item" id="exit-NVDA">
+                                    <span class="ticker">NVDA</span>
+                                    <span class="status">--</span>
+                                </div>
+                                <div class="stock-exit-item" id="exit-SMCI">
+                                    <span class="ticker">SMCI</span>
+                                    <span class="status">--</span>
+                                </div>
+                                <div class="stock-exit-item" id="exit-META">
+                                    <span class="ticker">META</span>
+                                    <span class="status">--</span>
+                                </div>
+                                <div class="stock-exit-item" id="exit-MSFT">
+                                    <span class="ticker">MSFT</span>
+                                    <span class="status">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- BTC COLUMN -->
+                    <div class="command-column">
+                        <h2 class="column-title">BITCOIN</h2>
+
+                        <!-- BTC Ignition -->
+                        <div id="btcIgnition" class="ignition-status-card">
+                            <div class="ignition-header">
+                                <span class="status-indicator" id="btcIgnitionIndicator"></span>
+                                <h3 id="btcIgnitionState">BTC MELTUP IGNITION</h3>
+                            </div>
+                            <div class="ignition-grid">
+                                <div class="metric-group">
+                                    <h4>Structure</h4>
+                                    <div class="metric-row"><span>Price:</span> <span id="val-60d"
+                                            class="mono">--</span></div>
+                                    <div class="metric-row"><span>RSI (14):</span> <span id="val-lows"
+                                            class="mono">--</span></div>
+                                </div>
+                                <div class="metric-group">
+                                    <h4>Velocity</h4>
+                                    <div class="metric-row"><span>Vol Ratio:</span> <span id="val-range"
+                                            class="mono">--</span></div>
+                                    <div class="metric-row"><span>5d Chg:</span> <span id="val-eth"
+                                            class="mono">--</span></div>
+                                </div>
+                                <div class="metric-group">
+                                    <h4>Regime</h4>
+                                    <div class="metric-row"><span>Tech Trend:</span> <span id="val-tech"
+                                            class="mono">--</span></div>
+                                    <div class="metric-row"><span>DXY:</span> <span id="val-dxy" class="mono">--</span>
+                                    </div>
+                                    <div class="metric-row"><span>Yields:</span> <span id="val-tnx"
+                                            class="mono">--</span></div>
+                                </div>
+                            </div>
+                            <div class="ignition-action hidden" id="btcIgnitionAction">
+                                🚀 <strong>SPECULATIVE IGNITION:</strong> Override ladders. Force 80% BTC exposure.
+                            </div>
+                        </div>
+
+                        <!-- BTC Meltup Exit -->
+                        <div id="btcExit" class="ignition-status-card">
+                            <div class="ignition-header">
+                                <span class="status-indicator" id="btcExitIndicator"></span>
+                                <h3 id="btcExitState">BTC MELTUP EXITS</h3>
+                            </div>
+                            <div class="ignition-grid">
+                                <div class="metric-group">
+                                    <h4>Overheated Metrics</h4>
+                                    <div class="metric-row"><span>RSI (14):</span> <span id="val-rsi"
+                                            class="mono">--</span></div>
+                                    <div class="metric-row"><span>Std Dev (30d):</span> <span id="val-std"
+                                            class="mono">--</span></div>
+                                    <div class="metric-row"><span>vs 20d MA:</span> <span id="val-ma"
+                                            class="mono">--</span></div>
+                                </div>
+                            </div>
+                            <div class="ignition-action hidden" id="btcExitAction">
+                                ⚠️ <strong>TRIM ALERT:</strong> Market is overheated. Consider reducing exposure.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Market Telemetry (Footer) -->
+                <div class="ignition-status-card telemetry-card">
+                    <div class="ignition-header">
+                        <h3>Market Telemetry</h3>
+                    </div>
+                    <div class="ignition-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));">
+                        <div class="metric-group">
+                            <h4>VIX</h4>
+                            <div class="metric-row"><span id="tel-vix" class="mono">--</span></div>
+                        </div>
+                        <div class="metric-group">
+                            <h4>TNX</h4>
+                            <div class="metric-row"><span id="tel-tnx" class="mono">--</span></div>
+                        </div>
+                        <div class="metric-group">
+                            <h4>DXY</h4>
+                            <div class="metric-row"><span id="tel-dxy" class="mono">--</span></div>
+                        </div>
+                        <div class="metric-group">
+                            <h4>SPY</h4>
+                            <div class="metric-row"><span id="tel-spy" class="mono">--</span></div>
+                        </div>
+                        <div class="metric-group">
+                            <h4>ETH</h4>
+                            <div class="metric-row"><span id="tel-eth" class="mono">--</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-panel table-container">
+                <table class="dashboard-table">
+                    <thead>
+                        <tr>
+                            <th>Asset</th>
+                            <th>Price</th>
+                            <th>24h Change</th>
+                            <th>Euphoria Status</th>
+                            <th>RSI (14)</th>
+                            <th>Exit Signal</th>
+                            <th>Next Buy Level (Alloc %)</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dashboardList">
+                        <!-- Rows injected by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </main>
+
+        <!-- DETAIL VIEW (Initially Hidden) -->
+        <main id="detailView" class="dashboard-grid hidden">
+            <button id="backBtn" class="back-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="19" y1="12" x2="5" y2="12"></line>
+                    <polyline points="12 19 5 12 12 5"></polyline>
+                </svg>
+                Back to Dashboard
+            </button>
+
+            <!-- Main Chart Section -->
+            <section class="chart-card glass-panel">
+                <div class="card-header">
+                    <div class="stock-info">
+                        <h2 id="currentTicker">AAPL</h2>
+                        <span class="price" id="currentPrice">$150.00</span>
+                        <span class="change positive" id="priceChange">+1.2%</span>
+                    </div>
+                    <div class="time-filters">
+                        <button class="filter-btn" data-range="1D">1D</button>
+                        <button class="filter-btn" data-range="1W">1W</button>
+                        <button class="filter-btn active" data-range="1M">1M</button>
+                        <button class="filter-btn" data-range="1Y">1Y</button>
+                    </div>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="stockChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Limit Buy Levels Sidebar -->
+            <aside class="levels-panel glass-panel">
+                <!-- Meltup Signal Box -->
+                <div class="alert-box" id="meltupSignalBox"
+                    style="margin-bottom: 24px; background: rgba(255, 75, 75, 0.05); border-color: rgba(255, 75, 75, 0.2); flex-direction: column; align-items: flex-start;">
+                    <h4 style="color: var(--danger); font-size: 14px; margin-bottom: 8px;">MELTUP EXIT ENGINE</h4>
+                    <div id="meltupSignalStatus"
+                        style="font-size: 18px; font-weight: 700; margin-bottom: 8px; color: #fff;">MONITORING</div>
+                    <ul id="meltupReasons"
+                        style="list-style: none; padding: 0; font-size: 13px; color: var(--text-muted);">
+                        <li>System not active</li>
+                    </ul>
+                </div>
+
+                <!-- Simulation Controls -->
+                <div class="glass-panel"
+                    style="padding: 16px; margin-bottom: 24px; background: rgba(255,255,255,0.02);">
+                    <h4
+                        style="font-size: 12px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px;">
+                        Simulation / Soft Metrics</h4>
+
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; font-size: 12px; margin-bottom: 4px;">Media Tone</label>
+                        <select id="simMediaTone"
+                            style="width: 100%; background: rgba(0,0,0,0.3); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px; border-radius: 4px;">
+                            <option value="Strong">Strong</option>
+                            <option value="Transformative">Transformative</option>
+                            <option value="Uncertain">Uncertain</option>
+                            <option value="Overextended">Overextended</option>
+                        </select>
+                    </div>
+
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; font-size: 12px; margin-bottom: 4px;">Fear & Greed Index</label>
+                        <input type="range" id="simFearGreed" min="0" max="100" value="75" style="width: 100%;">
+                        <div style="text-align: right; font-size: 11px; color: var(--text-muted);"><span
+                                id="simFearGreedValue">75</span></div>
+                    </div>
+
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; font-size: 12px; margin-bottom: 4px;">BTC Funding Rates</label>
+                        <select id="simFunding"
+                            style="width: 100%; background: rgba(0,0,0,0.3); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px; border-radius: 4px;">
+                            <option value="Normal">Normal</option>
+                            <option value="Spike">Spike</option>
+                        </select>
+                    </div>
+                </div>
+
+                <h3>Limit Buy Ladder</h3>
+                <p class="subtitle">Technical support/resistance levels.</p>
+
+                <div class="ladder-table-container">
+                    <table class="ladder-table">
+                        <thead>
+                            <tr>
+                                <th>Level</th>
+                                <th>Price</th>
+                                <th>Alloc %</th>
+                                <th>Action / Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="levelsList">
+                            <!-- Levels will be injected here by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="alert-box" id="analystSentiment"
+                    style="margin-bottom: 16px; background: rgba(0, 229, 255, 0.05);">
+                    <h4
+                        style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px;">
+                        Analyst Consensus</h4>
+                    <p id="analystSummary" style="font-size: 13px; line-height: 1.4;">Loading...</p>
+                </div>
+
+                <div class="alert-box" id="marketStatus">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
+                    <p>Data provided by Yahoo Finance (delayed).</p>
+                </div>
+            </aside>
+
+            <!-- Stats Row -->
+            <section class="stats-row">
+                <div class="stat-card">
+                    <h3>RSI (14)</h3>
+                    <div class="value" id="rsiValue">--</div>
+                    <div class="sub-label" id="rsiDesc">Neutral</div>
+                </div>
+                <div class="stat-card">
+                    <h3>vs 200MA</h3>
+                    <div class="value" id="maExtension">--</div>
+                    <div class="sub-label" id="maDesc">Fair Value</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Volume</h3>
+                    <div class="value" id="volume">--</div>
+                    <div class="sub-label" id="volDesc">Normal</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Top Signal Score</h3>
+                    <div class="value" id="topSignalValue">--</div>
+                    <div class="status" id="topSignalStatus">--</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Buy Quality Score</h3>
+                    <div class="value" id="buyQualityValue">--</div>
+                    <div class="status" id="buyQualityStatus">--</div>
+                </div>
+            </section>
+
+            <!-- Trend Summary -->
+            <div class="summary-section" id="trendSummaryBox"
+                style="margin-top: 20px; padding: 15px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                <h3 style="margin-bottom: 8px; font-size: 14px; color: #8b9bb4;">MARKET CONTEXT</h3>
+                <p id="trendSummaryText" style="font-size: 15px; line-height: 1.5; color: #e0e0e0;">Loading
+                    analysis...</p>
+            </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+
+</html>
