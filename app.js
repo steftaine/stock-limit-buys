@@ -1133,111 +1133,122 @@ class BTCIgnitionDetector {
     }
 
     async analyze(dataMap) {
-        console.log("Running BTC Ignition Analysis v2.0...");
-        const btc = dataMap['BTC-USD'];
-        if (!btc || !btc.indicators.quote[0].close) return;
+        try {
+            console.log("Running BTC Ignition Analysis v2.0...");
+            const btc = dataMap['BTC-USD'];
+            if (!btc || !btc.indicators.quote[0].close) {
+                console.warn("BTC data missing");
+                return;
+            }
 
-        const closes = btc.indicators.quote[0].close.filter(c => c !== null);
-        const highs = btc.indicators.quote[0].high.filter(h => h !== null);
-        const lows = btc.indicators.quote[0].low.filter(l => l !== null);
-        const opens = btc.indicators.quote[0].open.filter(o => o !== null);
-        const volumes = btc.indicators.quote[0].volume.filter(v => v !== null);
+            const closes = btc.indicators.quote[0].close.filter(c => c !== null);
+            const highs = btc.indicators.quote[0].high.filter(h => h !== null);
+            const lows = btc.indicators.quote[0].low.filter(l => l !== null);
+            const opens = btc.indicators.quote[0].open.filter(o => o !== null);
+            const volumes = btc.indicators.quote[0].volume.filter(v => v !== null);
 
-        const currentPrice = closes[closes.length - 1];
-        const currentVol = volumes[volumes.length - 1];
+            if (closes.length === 0) return;
 
-        // Metrics Calculation
-        const rsiSeries = calculateRSI(closes);
-        const rsi = rsiSeries[rsiSeries.length - 1];
-        const avgVol20 = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
-        const volRatio = currentVol / avgVol20;
+            const currentPrice = closes[closes.length - 1];
+            const currentVol = volumes[volumes.length - 1];
 
-        // 5-day Price Change
-        const price5dAgo = closes[closes.length - 6];
-        const change5d = ((currentPrice - price5dAgo) / price5dAgo) * 100;
+            // Metrics Calculation
+            const rsiSeries = calculateRSI(closes);
+            const rsi = rsiSeries[rsiSeries.length - 1];
+            const avgVol20 = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
+            const volRatio = currentVol / avgVol20;
 
-        // 90-day Low Calculation (Regime Base)
-        // Ensure we have enough data, otherwise use max available
-        const lookback90 = Math.min(closes.length, 90);
-        const low90d = Math.min(...lows.slice(-lookback90));
-        const priceVsLow90d = ((currentPrice - low90d) / low90d) * 100;
+            // 5-day Price Change
+            const price5dAgo = closes[closes.length - 6];
+            const change5d = ((currentPrice - price5dAgo) / price5dAgo) * 100;
 
-        // --- LOGIC ENGINE v3.0 (Regime-Based) ---
+            // 90-day Low Calculation (Regime Base)
+            // Ensure we have enough data, otherwise use max available
+            const lookback90 = Math.min(closes.length, 90);
+            const low90d = Math.min(...lows.slice(-lookback90));
+            const priceVsLow90d = ((currentPrice - low90d) / low90d) * 100;
 
-        // DISTRIBUTION CRITERIA (All must be true)
-        // 1. RSI > 72 (Overbought)
-        // 2. Price > +35% from 90-day Low (Extended)
-        // 3. Vol Ratio > 1.6x (Euphoric Volume)
-        const isDistribution = (rsi > 72) && (priceVsLow90d > 35) && (volRatio > 1.6);
+            // --- LOGIC ENGINE v3.0 (Regime-Based) ---
 
-        if (isDistribution) {
-            this.state = 'DISTRIBUTION ACTIVE';
-            this.action = 'Prepare trimming sequence.';
-        } else {
-            // Default State: ACCUMULATION
-            this.state = 'ACCUMULATION';
-            this.action = 'No trimming. Maintain exposure.';
+            // DISTRIBUTION CRITERIA (All must be true)
+            // 1. RSI > 72 (Overbought)
+            // 2. Price > +35% from 90-day Low (Extended)
+            // 3. Vol Ratio > 1.6x (Euphoric Volume)
+            const isDistribution = (rsi > 72) && (priceVsLow90d > 35) && (volRatio > 1.6);
+
+            if (isDistribution) {
+                this.state = 'DISTRIBUTION ACTIVE';
+                this.action = 'Prepare trimming sequence.';
+            } else {
+                // Default State: ACCUMULATION
+                this.state = 'ACCUMULATION';
+                this.action = 'No trimming. Maintain exposure.';
+            }
+
+            // --- RESTORED METRICS FOR DISPLAY PRECISION ---
+            // C. RISK REGIME (Calculated for display context)
+            let techTrend = 'Mixed';
+            const nvda = dataMap['NVDA'];
+            const meta = dataMap['META'];
+            if (nvda && meta) {
+                const nvdaCloses = nvda.indicators.quote[0].close.filter(c => c !== null);
+                const metaCloses = meta.indicators.quote[0].close.filter(c => c !== null);
+                const nvdaRising = nvdaCloses[nvdaCloses.length - 1] > calculateSMA(nvdaCloses, 20);
+                const metaRising = metaCloses[metaCloses.length - 1] > calculateSMA(metaCloses, 20);
+                if (nvdaRising && metaRising) techTrend = 'Bullish';
+                else if (!nvdaRising && !metaRising) techTrend = 'Bearish';
+            }
+
+            let dxyVal = 0;
+            const dxy = dataMap['DX-Y.NYB'];
+            if (dxy) {
+                const dxyCloses = dxy.indicators.quote[0].close.filter(c => c !== null);
+                dxyVal = dxyCloses[dxyCloses.length - 1];
+            }
+
+            let tnxVal = 0;
+            const tnx = dataMap['^TNX'];
+            if (tnx) {
+                const tnxCloses = tnx.indicators.quote[0].close.filter(c => c !== null);
+                tnxVal = tnxCloses[tnxCloses.length - 1];
+            }
+
+            // D. OVERHEATED METRICS (Calculated for display)
+            // 2. Price > 3 std devs above 30d mean
+            const mean30 = closes.slice(-30).reduce((a, b) => a + b, 0) / 30;
+            const stdDev30 = Math.sqrt(closes.slice(-30).map(x => Math.pow(x - mean30, 2)).reduce((a, b) => a + b, 0) / 30);
+            const stdDevsAbove = (currentPrice - mean30) / stdDev30;
+
+            // 3. Extension > 50% above 20d MA
+            const sma20 = calculateSMA(closes, 20);
+            const distFromMA = ((currentPrice - sma20) / sma20) * 100;
+
+
+            // Store values for UI
+            this.values = {
+                price: currentPrice,
+                rsi: rsi,
+                volRatio: volRatio,
+                change5d: change5d,
+                range5d: range5d,
+                techTrend: techTrend,
+                dxy: dxyVal,
+                tnx: tnxVal,
+                stdDevsAbove: stdDevsAbove,
+                distFromMA: distFromMA,
+                priceVsLow90d: priceVsLow90d // Store for debugging/display if needed
+            };
+
+            // Call updateUI immediately
+            this.updateUI();
+
+            // Also call after a short delay to ensure all async ops complete
+            setTimeout(() => this.updateUI(), 100);
+        } catch (e) {
+            console.error("BTC Analysis Error:", e);
+            const comm = document.getElementById('commentaryText');
+            if (comm) comm.textContent = `Error: ${e.message}`;
         }
-
-        // --- RESTORED METRICS FOR DISPLAY PRECISION ---
-        // C. RISK REGIME (Calculated for display context)
-        let techTrend = 'Mixed';
-        const nvda = dataMap['NVDA'];
-        const meta = dataMap['META'];
-        if (nvda && meta) {
-            const nvdaCloses = nvda.indicators.quote[0].close.filter(c => c !== null);
-            const metaCloses = meta.indicators.quote[0].close.filter(c => c !== null);
-            const nvdaRising = nvdaCloses[nvdaCloses.length - 1] > calculateSMA(nvdaCloses, 20);
-            const metaRising = metaCloses[metaCloses.length - 1] > calculateSMA(metaCloses, 20);
-            if (nvdaRising && metaRising) techTrend = 'Bullish';
-            else if (!nvdaRising && !metaRising) techTrend = 'Bearish';
-        }
-
-        let dxyVal = 0;
-        const dxy = dataMap['DX-Y.NYB'];
-        if (dxy) {
-            const dxyCloses = dxy.indicators.quote[0].close.filter(c => c !== null);
-            dxyVal = dxyCloses[dxyCloses.length - 1];
-        }
-
-        let tnxVal = 0;
-        const tnx = dataMap['^TNX'];
-        if (tnx) {
-            const tnxCloses = tnx.indicators.quote[0].close.filter(c => c !== null);
-            tnxVal = tnxCloses[tnxCloses.length - 1];
-        }
-
-        // D. OVERHEATED METRICS (Calculated for display)
-        // 2. Price > 3 std devs above 30d mean
-        const mean30 = closes.slice(-30).reduce((a, b) => a + b, 0) / 30;
-        const stdDev30 = Math.sqrt(closes.slice(-30).map(x => Math.pow(x - mean30, 2)).reduce((a, b) => a + b, 0) / 30);
-        const stdDevsAbove = (currentPrice - mean30) / stdDev30;
-
-        // 3. Extension > 50% above 20d MA
-        const sma20 = calculateSMA(closes, 20);
-        const distFromMA = ((currentPrice - sma20) / sma20) * 100;
-
-
-        // Store values for UI
-        this.values = {
-            price: currentPrice,
-            rsi: rsi,
-            volRatio: volRatio,
-            change5d: change5d,
-            range5d: range5d,
-            techTrend: techTrend,
-            dxy: dxyVal,
-            tnx: tnxVal,
-            stdDevsAbove: stdDevsAbove,
-            distFromMA: distFromMA,
-            priceVsLow90d: priceVsLow90d // Store for debugging/display if needed
-        };
-
-        // Call updateUI immediately
-        this.updateUI();
-
-        // Also call after a short delay to ensure all async ops complete
-        setTimeout(() => this.updateUI(), 100);
     }
 
     updateUI() {
