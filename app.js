@@ -1615,8 +1615,20 @@ class RawArcAllocator {
     }
 
     assessPositioningRisk(dataMap) {
-        // Calculate % allocated vs target
+        // Calculate REAL allocation = holdings + pending orders
         const equity = this.totalPortfolio - this.userState.holdings['BTC-USD'];
+
+        // Calculate value of pending orders
+        const pendingValue = {};
+        Object.keys(this.userState.limits).forEach(symbol => {
+            const orders = this.userState.limits[symbol];
+            let total = 0;
+            orders.forEach(order => {
+                total += order.price * order.size;
+            });
+            pendingValue[symbol] = total;
+        });
+
         const targets = {
             'META': 0.25 * equity,
             'MSFT': 0.25 * equity,
@@ -1625,11 +1637,17 @@ class RawArcAllocator {
             'SMCI': 0.10 * equity
         };
 
+        let report = '';
         let underexposed = 0;
         let overexposed = 0;
+
         Object.keys(targets).forEach(symbol => {
-            const current = this.userState.holdings[symbol] || 0;
-            const gap = targets[symbol] - current;
+            const holdings = this.userState.holdings[symbol] || 0;
+            const pending = pendingValue[symbol] || 0;
+            const totalCommitted = holdings + pending;
+            const target = targets[symbol];
+            const gap = target - totalCommitted;
+
             if (gap > 0) underexposed += gap;
             if (gap < 0) overexposed += Math.abs(gap);
         });
@@ -1638,7 +1656,7 @@ class RawArcAllocator {
         let score = Math.min(Math.round(riskPct / 5), 10);
         let reason = score > 6 ? "Dangerously underexposed. Deploy capital." : "Positioning acceptable.";
 
-        return { score, reason };
+        return { score, reason, pendingValue };
     }
 
     computeAllocation(regime) {
@@ -1681,14 +1699,27 @@ class RawArcAllocator {
 
         if (orders.length === 0) return `  ${symbol}: No orders.\n`;
 
+        // Calculate total committed
+        const holdings = this.userState.holdings[symbol] || 0;
+        const pendingValue = orders.reduce((sum, o) => sum + (o.price * o.size), 0);
+        const totalCommitted = holdings + pendingValue;
+
         let review = `  ${symbol} (Price: $${price.toFixed(2)}):\n`;
+        review += `    Holdings: $${holdings.toLocaleString()} | Pending: $${pendingValue.toLocaleString()} | Total: $${totalCommitted.toLocaleString()}\n`;
 
         orders.forEach(order => {
             const gapPct = ((price - order.price) / price) * 100;
             const fillProb = this.calculateFillProbability(gapPct);
-            const command = this.evaluateOrder(symbol, order, price, gapPct, fillProb, regime);
+            const evaluation = this.evaluateOrder(symbol, order, price, gapPct, fillProb, regime);
 
-            review += `    $${order.price} (${order.size}) - ${gapPct.toFixed(1)}% below, ${fillProb}% fill → ${command}\n`;
+            let line = `    $${order.price} (${order.size}) - ${gapPct.toFixed(1)}% below, ${fillProb}% fill → ${evaluation.action}`;
+
+            // If canceling, suggest replacement
+            if (evaluation.action.includes('CANCEL') && evaluation.replacement) {
+                line += `\n       → Suggested: ${evaluation.replacement}`;
+            }
+
+            review += line + '\n';
         });
 
         return review;
@@ -1704,33 +1735,67 @@ class RawArcAllocator {
     }
 
     evaluateOrder(symbol, order, price, gapPct, fillProb, regime) {
+        let action = '';
+        let replacement = null;
+
         // Core AI: >50% fill prob required
         if (this.coreAI.includes(symbol)) {
-            if (fillProb < 50) return "❌ CANCEL (too far)";
-            return "✅ KEEP";
+            if (fillProb < 50) {
+                action = "❌ CANCEL (too far)";
+                // Suggest replacement at 5-8% below current price (70% fill prob)
+                const newPrice = Math.round(price * 0.95);
+                const newSize = Math.round((order.price * order.size) / newPrice);
+                replacement = `Replace with ${newSize} @ $${newPrice} (5% below, 70% fill)`;
+            } else {
+                action = "✅ KEEP";
+            }
+            return { action, replacement };
         }
 
         // NVDA: 40-60% main, 10-25% deep
         if (symbol === 'NVDA') {
-            if (order.price > price * 0.90 && fillProb < 40) return "⚠️ MOVE UP";
-            if (order.price < price * 0.75 && fillProb > 25) return "⚠️ MOVE DOWN";
-            return "✅ KEEP";
+            if (order.price > price * 0.90 && fillProb < 40) {
+                action = "⚠️ MOVE UP";
+                const newPrice = Math.round(price * 0.92);
+                const newSize = Math.round((order.price * order.size) / newPrice);
+                replacement = `Move to ${newSize} @ $${newPrice} (8% below, 60% fill)`;
+            } else if (order.price < price * 0.75 && fillProb > 25) {
+                action = "⚠️ MOVE DOWN";
+                const newPrice = Math.round(price * 0.80);
+                replacement = `Move to ${order.size} @ $${newPrice} (20% below, 20% fill)`;
+            } else {
+                action = "✅ KEEP";
+            }
+            return { action, replacement };
         }
 
         // SMCI: 10-40% only
         if (symbol === 'SMCI') {
-            if (fillProb > 45) return "❌ CANCEL (too close)";
-            return "✅ KEEP";
+            if (fillProb > 45) {
+                action = "❌ CANCEL (too close)";
+                const newPrice = Math.round(price * 0.85);
+                replacement = `Move to ${order.size} @ $${newPrice} (15% below, 30% fill)`;
+            } else {
+                action = "✅ KEEP";
+            }
+            return { action, replacement };
         }
 
         // BTC: Remove <5%, keep 5-25%
         if (symbol === 'BTC-USD') {
-            if (gapPct < 5) return "❌ CANCEL (too close)";
-            if (gapPct > 25) return "✅ KEEP (deep safety)";
-            return "✅ KEEP";
+            if (gapPct < 5) {
+                action = "❌ CANCEL (too close)";
+                const newPrice = Math.round(price * 0.90);
+                replacement = `Move to ${order.size} @ $${newPrice} (10% below, safer)`;
+            } else if (gapPct > 25) {
+                action = "✅ KEEP (deep safety)";
+            } else {
+                action = "✅ KEEP";
+            }
+            return { action, replacement };
         }
 
-        return "✅ KEEP";
+        return { action: "✅ KEEP", replacement: null };
     }
 
     generateCommands(dataMap, regime, allocation) {
