@@ -1162,6 +1162,11 @@ class BTCIgnitionDetector {
             const price5dAgo = closes[closes.length - 6];
             const change5d = ((currentPrice - price5dAgo) / price5dAgo) * 100;
 
+            // Compression (Range < 5% over last 5 days) - Restored for metrics
+            const high5d = Math.max(...highs.slice(-5));
+            const low5d = Math.min(...lows.slice(-5));
+            const range5d = ((high5d - low5d) / low5d) * 100;
+
             // 90-day Low Calculation (Regime Base)
             // Ensure we have enough data, otherwise use max available
             const lookback90 = Math.min(closes.length, 90);
@@ -1480,6 +1485,12 @@ class StockMeltupExit {
     }
 
     checkMETA(closes, highs, lows, opens, volumes, spyDivergence) {
+        const currentPrice = closes[closes.length - 1];
+        const rsi = calculateRSI(closes).pop();
+
+        // Extended: Price > 40% above 200d MA (approx)
+        const sma200 = calculateSMA(closes, 200);
+        const extended = (currentPrice > sma200 * 1.4);
 
         let warning = (rsi > 75 && extended);
 
