@@ -1283,15 +1283,17 @@ class BTCIgnitionDetector {
         const elDxy = document.getElementById('val-dxy');
         const elTnx = document.getElementById('val-tnx');
 
-        if (el60d) el60d.textContent = `$${this.values.price.toFixed(0)}`;
-        if (elLows) elLows.textContent = this.values.rsi.toFixed(1);
-        if (elRange) elRange.textContent = `${this.values.volRatio.toFixed(1)}x`;
-        if (elEth) elEth.textContent = `${this.values.change5d.toFixed(1)}%`;
+        if (this.values.price !== undefined) {
+            if (el60d) el60d.textContent = `$${this.values.price.toFixed(0)}`;
+            if (elLows) elLows.textContent = this.values.rsi.toFixed(1);
+            if (elRange) elRange.textContent = `${this.values.volRatio.toFixed(1)}x`;
+            if (elEth) elEth.textContent = `${this.values.change5d.toFixed(1)}%`;
 
-        // Regime Values
-        if (elTech) elTech.textContent = this.values.techTrend;
-        if (elDxy) elDxy.textContent = this.values.dxy.toFixed(2);
-        if (elTnx) elTnx.textContent = `${this.values.tnx.toFixed(2)}%`;
+            // Regime Values
+            if (elTech) elTech.textContent = this.values.techTrend;
+            if (elDxy) elDxy.textContent = this.values.dxy.toFixed(2);
+            if (elTnx) elTnx.textContent = `${this.values.tnx.toFixed(2)}%`;
+        }
 
         // Color Logic: 
         // ACCUMULATION = Red/Neutral (Hold)
