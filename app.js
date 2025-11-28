@@ -1156,69 +1156,27 @@ class BTCIgnitionDetector {
         const price5dAgo = closes[closes.length - 6];
         const change5d = ((currentPrice - price5dAgo) / price5dAgo) * 100;
 
-        // Higher Lows (3 sessions)
-        let higherLows3 = true;
-        for (let i = 0; i < 3; i++) {
-            if (lows[lows.length - 1 - i] <= lows[lows.length - 2 - i]) higherLows3 = false;
-        }
+        // 90-day Low Calculation (Regime Base)
+        // Ensure we have enough data, otherwise use max available
+        const lookback90 = Math.min(closes.length, 90);
+        const low90d = Math.min(...lows.slice(-lookback90));
+        const priceVsLow90d = ((currentPrice - low90d) / low90d) * 100;
 
-        // Volume Rising (vs prior session)
-        const volRising = currentVol > volumes[volumes.length - 2] * 1.20; // > 20% rise
+        // --- LOGIC ENGINE v3.0 (Regime-Based) ---
 
-        // Compression (Range < 5% over last 5 days)
-        const high5d = Math.max(...highs.slice(-5));
-        const low5d = Math.min(...lows.slice(-5));
-        const range5d = ((high5d - low5d) / low5d) * 100;
-        const isCompressed = range5d < 5;
+        // DISTRIBUTION CRITERIA (All must be true)
+        // 1. RSI > 72 (Overbought)
+        // 2. Price > +35% from 90-day Low (Extended)
+        // 3. Vol Ratio > 1.6x (Euphoric Volume)
+        const isDistribution = (rsi > 72) && (priceVsLow90d > 35) && (volRatio > 1.6);
 
-        // Wick Calculation (Long Upper Wick)
-        const bodySize = Math.abs(currentPrice - opens[opens.length - 1]);
-        const upperWick = highs[highs.length - 1] - Math.max(currentPrice, opens[opens.length - 1]);
-        const longWick = upperWick > bodySize * 2; // Wick 2x body
-
-        // --- LOGIC ENGINE v2.0 ---
-
-        // 5. EXIT PREPARATION SIGNAL (Distribution)
-        // RSI > 85 OR Long Wick OR Vol Spike + Flat Price
-        const volSpikeFlat = (volRatio > 1.5) && (Math.abs((currentPrice - opens[opens.length - 1]) / opens[opens.length - 1]) < 0.01);
-
-        if (rsi > 85 || longWick || volSpikeFlat) {
-            this.state = 'DISTRIBUTION START';
+        if (isDistribution) {
+            this.state = 'DISTRIBUTION ACTIVE';
             this.action = 'Prepare trimming sequence.';
-        }
-        // 4. MELTUP PHASE DETECTION
-        // +15% in 5 days AND RSI > 78
-        else if (change5d > 15 && rsi > 78) {
-            this.state = 'MELTUP ACTIVE';
-            this.action = 'Switch from accumulation to exit monitoring.';
-        }
-        // 3. FAKEOUT PROTECTION
-        // Spike > 95k BUT Close < 92k
-        else if (Math.max(...highs.slice(-1)) > 95000 && currentPrice < 92000) {
-            this.state = 'FAKE BREAKOUT';
-            this.action = 'Do NOT chase. Wait retest.';
-        }
-        // 1. IGNITION CONDITIONS
-        // Price > 95k AND Vol > 1.5x AND 60 < RSI < 78 AND Compression
-        else if (currentPrice > 95000 && volRatio > 1.5 && rsi > 60 && rsi < 78 && isCompressed) {
-            this.state = 'IGNITION CONFIRMED';
-            this.action = 'Deploy remaining capital aggressively.';
-        }
-        // 2. EARLY WARNING SIGNAL (Pre-Ignition)
-        // 90k-94k AND Vol Rising AND Higher Lows
-        else if (currentPrice >= 90000 && currentPrice <= 94000 && volRising && higherLows3) {
-            this.state = 'PRE-IGNITION';
-            this.action = 'Move exposure to 70–80% deployed.';
-        }
-        // DEFAULT: COMPRESSION / CONSOLIDATION
-        else {
-            this.state = 'COMPRESSION'; // Default state
-            if (currentPrice > 105000) {
-                this.state = 'VERTICAL PHASE'; // 105k+ No new buys
-                this.action = 'No new buys.';
-            } else {
-                this.action = 'Ladder + partial market buys (85k-94k).';
-            }
+        } else {
+            // Default State: ACCUMULATION
+            this.state = 'ACCUMULATION';
+            this.action = 'No trimming. Maintain exposure.';
         }
 
         // --- RESTORED METRICS FOR DISPLAY PRECISION ---
@@ -1271,7 +1229,8 @@ class BTCIgnitionDetector {
             dxy: dxyVal,
             tnx: tnxVal,
             stdDevsAbove: stdDevsAbove,
-            distFromMA: distFromMA
+            distFromMA: distFromMA,
+            priceVsLow90d: priceVsLow90d // Store for debugging/display if needed
         };
 
         // Call updateUI immediately
@@ -1288,9 +1247,16 @@ class BTCIgnitionDetector {
         const ignIndicator = document.getElementById('btcIgnitionIndicator');
         const ignAction = document.getElementById('btcIgnitionAction');
 
+        if (!ignContainer || !ignState || !ignIndicator || !ignAction) return;
+
         ignContainer.classList.remove('hidden', 'active', 'pre-ignition');
         ignAction.classList.add('hidden');
-        ignState.textContent = `BTC IGNITION: ${this.state}`;
+
+        // Update Header Label
+        const ignHeader = ignContainer.querySelector('h2');
+        if (ignHeader) ignHeader.textContent = 'BTC STATE';
+
+        ignState.textContent = `STATUS: ${this.state}`;
 
         // Live Values (Mapped to new logic) - with null checks
         const el60d = document.getElementById('val-60d');
@@ -1311,36 +1277,27 @@ class BTCIgnitionDetector {
         if (elDxy) elDxy.textContent = this.values.dxy.toFixed(2);
         if (elTnx) elTnx.textContent = `${this.values.tnx.toFixed(2)}%`;
 
-        // Labels are already correct in HTML, no need to update via JS
+        // Color Logic: 
+        // ACCUMULATION = Red/Neutral (Hold)
+        // DISTRIBUTION = Green/Warning (Action)
 
-
-        // Color Logic: Red = HOLD/WAIT, Green = ACTION/GO, Orange = WARNING/PREP
         // Reset styles first
         ignIndicator.style.backgroundColor = '';
         ignIndicator.style.boxShadow = '';
 
-        if (this.state === 'IGNITION CONFIRMED' || this.state === 'MELTUP ACTIVE') {
-            ignContainer.classList.add('active');
+        if (this.state === 'DISTRIBUTION ACTIVE') {
+            ignContainer.classList.add('active'); // Green border
             ignIndicator.style.backgroundColor = 'var(--success)';
             ignIndicator.style.boxShadow = '0 0 15px var(--success)';
-            ignAction.textContent = `🚀 ${this.state}: ${this.action}`;
-            ignAction.classList.remove('hidden');
-        } else if (this.state === 'PRE-IGNITION' || this.state === 'DISTRIBUTION START') {
-            ignContainer.classList.add('pre-ignition');
-            ignIndicator.style.backgroundColor = 'var(--warning)';
-            ignIndicator.style.boxShadow = '0 0 15px var(--warning)';
-            ignAction.textContent = `⚠️ ${this.state}: ${this.action}`;
-            ignAction.classList.remove('hidden');
-        } else if (this.state === 'FAKE BREAKOUT') {
-            ignIndicator.style.backgroundColor = 'var(--danger)';
-            ignIndicator.style.boxShadow = '0 0 15px var(--danger)';
-            ignAction.textContent = `🛑 ${this.state}: ${this.action}`;
+            ignAction.textContent = `⚠️ DISTRIBUTION: ${this.action}`;
             ignAction.classList.remove('hidden');
         } else {
-            // COMPRESSION / VERTICAL PHASE
-            // Force Red color for Compression
-            ignIndicator.style.backgroundColor = 'var(--danger)';
+            // ACCUMULATION
+            ignIndicator.style.backgroundColor = 'var(--danger)'; // Red for Hold/Wait
             ignIndicator.style.boxShadow = 'none';
+            ignAction.textContent = `🔒 ${this.state}: ${this.action}`;
+            ignAction.classList.remove('hidden');
+            ignAction.style.color = 'var(--text-muted)';
         }
 
         // Update Exit Card (BTC MELTUP EXIT)
@@ -1349,16 +1306,17 @@ class BTCIgnitionDetector {
         const exitIndicator = document.getElementById('btcExitIndicator');
         const exitAction = document.getElementById('btcExitAction');
 
+        if (!exitContainer || !exitStateHeader || !exitIndicator || !exitAction) return;
+
         exitContainer.classList.remove('hidden');
         exitAction.classList.add('hidden');
 
-        const isExit = (this.state === 'DISTRIBUTION START' || this.state === 'MELTUP ACTIVE');
-        const displayState = isExit ? 'EXIT MONITOR' : 'HOLD';
+        const isExit = (this.state === 'DISTRIBUTION ACTIVE');
+        const displayState = isExit ? 'EXIT MONITOR ARMED' : 'DORMANT';
 
-        exitStateHeader.textContent = `BTC MELTUP EXIT: ${displayState}`;
+        exitStateHeader.textContent = `EXIT SYSTEM: ${displayState}`;
 
         // Live Values (Reuse calculated ones)
-        // Add defensive checks - getElementById returns null if not found
         const rsiEl = document.getElementById('val-rsi');
         const stdEl = document.getElementById('val-std');
         const maEl = document.getElementById('val-ma');
@@ -1373,16 +1331,19 @@ class BTCIgnitionDetector {
             maEl.textContent = `+${this.values.distFromMA.toFixed(1)}%`;
         }
 
-        if (this.state === 'DISTRIBUTION START') {
+        if (isExit) {
             exitIndicator.style.backgroundColor = 'var(--success)'; // Green for Action (Trim)
             exitIndicator.style.boxShadow = '0 0 15px var(--success)';
             exitAction.textContent = `⚠️ TRIM ALERT: ${this.action}`;
             exitAction.classList.remove('hidden');
             exitContainer.style.borderColor = 'var(--success)';
         } else {
-            exitIndicator.style.backgroundColor = 'var(--danger)'; // Red for Hold
+            exitIndicator.style.backgroundColor = 'var(--danger)'; // Red for Dormant
             exitIndicator.style.boxShadow = 'none';
             exitContainer.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+            exitAction.textContent = 'System Dormant. No Action.';
+            exitAction.classList.remove('hidden');
+            exitAction.style.color = 'var(--text-muted)';
         }
     }
 }
