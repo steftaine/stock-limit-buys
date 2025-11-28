@@ -1506,13 +1506,27 @@ class RawArcAllocator {
     }
 
     runDailyCycle(dataMap) {
+        // Calculate REAL committed capital (holdings + pending orders)
+        let totalPendingOrders = 0;
+        Object.keys(this.userState.limits).forEach(symbol => {
+            const orders = this.userState.limits[symbol];
+            orders.forEach(order => {
+                totalPendingOrders += order.price * order.size;
+            });
+        });
+
+        const totalHoldings = Object.values(this.userState.holdings).reduce((sum, val) => sum + val, 0);
+        const totalCommittedCapital = totalHoldings + totalPendingOrders;
+
         let report = "═══════════════════════════════════════════════════════\n";
         report += "   ANTIGRAVITY RAW-ARC ALLOCATOR v4\n";
         report += "═══════════════════════════════════════════════════════\n\n";
 
         // 0. INPUT SNAPSHOT
-        report += `Portfolio Value: $${this.totalPortfolio.toLocaleString()}\n`;
-        report += `Deployable Cash: $${this.deployableCapital.toLocaleString()}\n\n`;
+        report += `Current Holdings: $${totalHoldings.toLocaleString()}\n`;
+        report += `Pending Orders: $${totalPendingOrders.toLocaleString()}\n`;
+        report += `Total Committed Capital: $${totalCommittedCapital.toLocaleString()}\n`;
+        report += `Additional Cash Available: $${this.deployableCapital.toLocaleString()}\n\n`;
 
         // 1. REGIME CLASSIFICATION
         const regime = this.classifyRegime(dataMap);
