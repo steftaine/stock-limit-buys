@@ -1711,10 +1711,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const btn = document.getElementById('runAllocatorBtn');
     if (btn) {
         btn.addEventListener('click', () => {
-            if (window.dataManager && window.dataManager.cache) {
-                rawArcAllocator.runDailyCycle(window.dataManager.cache);
+            if (window.marketDataCache && Object.keys(window.marketDataCache).length > 0) {
+                rawArcAllocator.runDailyCycle(window.marketDataCache);
             } else {
-                alert("Market data not ready. Please wait...");
+                alert("Market data not ready. Please wait for dashboard to load, then try again.");
             }
         });
     }
@@ -1890,6 +1890,7 @@ class DataManager {
 }
 
 const dataManager = new DataManager();
+window.dataManager = dataManager; // Expose globally for allocator
 
 // Fetch Stock Data (Wrapper using DataManager)
 const fetchStockData = async (symbol, range = '1mo', interval = '1d') => {
@@ -2071,6 +2072,9 @@ const initDashboard = async () => {
 
     // Wait for all data then run Ignition Detector
     Promise.all(fetchPromises).then(() => {
+        // Store data globally for allocator
+        window.marketDataCache = fullDataMap;
+
         ignitionDetector.analyze(fullDataMap);
         btcDetector.analyze(fullDataMap);
 
