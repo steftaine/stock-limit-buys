@@ -980,10 +980,9 @@ const detectSupportResistanceLevels = (prices, volumes, currentPrice) => {
 
 // ===== DATA MANAGER & PERFORMANCE =====
 
-// Ignition Detector Logic
+// Ignition Detector Logic (Standardized)
 class IgnitionDetector {
     constructor() {
-        this.leaders = ['NVDA', 'META', 'BTC-USD']; // Leaders for Price check
         this.basket = ['NVDA', 'META', 'MSFT', 'GOOG', 'BTC-USD', 'SMCI']; // Full basket
         this.state = 'COMPRESSION'; // COMPRESSION, PRE-IGNITION, IGNITION ACTIVE
         this.metrics = {
@@ -996,79 +995,42 @@ class IgnitionDetector {
     async analyze(dataMap) {
         console.log("Running Ignition Detector analysis...");
 
-        // 1. Price Check
-        // Rule: 2/3 leaders break multi-week highs (>3-5%) AND 5+ days higher lows
-        let leadersBreakout = 0;
-        let leadersHigherLows = 0;
+        let breakoutCount = 0;
+        let validDataCount = 0;
+        let highVolCount = 0;
+        let greenCount = 0;
 
-        for (const symbol of this.leaders) {
+        for (const symbol of this.basket) {
             const data = dataMap[symbol];
             if (!data || !data.indicators.quote[0].close) continue;
 
+            validDataCount++;
             const closes = data.indicators.quote[0].close.filter(c => c !== null);
-            const currentPrice = closes[closes.length - 1];
-
-            // Check 20-day high (approx multi-week)
-            const recentHigh = Math.max(...closes.slice(-20, -1));
-            const breakout = (currentPrice > recentHigh * 1.03); // >3% breakout
-
-            if (breakout) leadersBreakout++;
-
-            // Check higher lows (simplified: price > 5-day SMA and rising)
-            const sma5 = calculateSMA(closes, 5);
-            const sma20 = calculateSMA(closes, 20);
-            if (currentPrice > sma5 && sma5 > sma20) leadersHigherLows++;
-        }
-
-        this.metrics.price = (leadersBreakout >= 2 && leadersHigherLows >= 2);
-
-        // 2. Volume Check
-        // Rule: 2 leaders >150% vol OR 3/5 green days with high vol
-        let highVolCount = 0;
-        for (const symbol of this.leaders) {
-            const data = dataMap[symbol];
-            if (!data) continue;
-
             const volumes = data.indicators.quote[0].volume.filter(v => v !== null);
+            const currentPrice = closes[closes.length - 1];
             const currentVol = volumes[volumes.length - 1];
             const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
 
-            if (currentVol > avgVol * 1.5) highVolCount++;
+            // 1. Price Breakout Check (Above 20d High)
+            const high20 = Math.max(...closes.slice(-21, -1));
+            if (currentPrice > high20) breakoutCount++;
+
+            // 2. Volume Surge Check (> 1.2x Average)
+            if (currentVol > avgVol * 1.2) highVolCount++;
+
+            // 3. Green Day Check
+            if (currentPrice > closes[closes.length - 2]) greenCount++;
         }
 
-        this.metrics.volume = (highVolCount >= 2);
+        // Thresholds (Regime-Based)
+        // Price: > 50% of basket breaking out
+        this.metrics.price = (breakoutCount >= Math.ceil(validDataCount / 2));
 
-        // 3. Breadth/RS Check
-        // Rule: Basket outperforms SPY (simulated here by checking if basket is mostly green)
-        // AND BTC rising AND VIX not spiking
+        // Volume: Significant participation (> 30% of basket surging)
+        this.metrics.volume = (highVolCount >= Math.ceil(validDataCount / 3));
 
-        // Check Basket Green
-        let greenCount = 0;
-        for (const symbol of this.basket) {
-            const data = dataMap[symbol];
-            if (data && data.meta.regularMarketPrice > data.meta.chartPreviousClose) greenCount++;
-        }
-        const basketStrong = greenCount >= 4; // 4 out of 6 green
-
-        // Check BTC
-        const btcData = dataMap['BTC-USD'];
-        const btcRising = btcData && btcData.meta.regularMarketPrice > calculateSMA(btcData.indicators.quote[0].close.filter(c => c !== null), 20);
-
-        // Check VIX
-        const vixData = dataMap['^VIX'];
-        let vixOk = false;
-        if (vixData && vixData.indicators.quote[0].close) {
-            const vixCloses = vixData.indicators.quote[0].close.filter(c => c !== null);
-            const currentVix = vixCloses[vixCloses.length - 1];
-            // VIX < 20 is generally "safe", or VIX declining (below 20d SMA)
-            const vixSma20 = calculateSMA(vixCloses, 20);
-            vixOk = (currentVix < 20) || (currentVix < vixSma20);
-        } else {
-            // Fallback if VIX data fails (assume safe if basket is strong)
-            vixOk = basketStrong;
-        }
-
-        this.metrics.breadth = (basketStrong && btcRising && vixOk);
+        // Breadth: Majority green
+        this.metrics.breadth = (greenCount >= Math.ceil(validDataCount / 2));
 
         // Determine State
         if (this.metrics.price && this.metrics.volume && this.metrics.breadth) {
@@ -1090,6 +1052,8 @@ class IgnitionDetector {
         const pVal = document.getElementById('ignPrice');
         const vVal = document.getElementById('ignVol');
         const bVal = document.getElementById('ignBreadth');
+
+        if (!container) return;
 
         container.classList.remove('hidden', 'active', 'pre-ignition');
         actionBox.classList.add('hidden');
@@ -1368,7 +1332,7 @@ class BTCIgnitionDetector {
 
 const btcDetector = new BTCIgnitionDetector();
 
-// Stock Meltup Exit System
+// Stock Meltup Exit System (Standardized)
 class StockMeltupExit {
     constructor() {
         this.signals = {};
@@ -1380,7 +1344,6 @@ class StockMeltupExit {
         let signal = { status: 'SAFE', action: '', reason: '' };
 
         // 0. IGNITION CHECK
-        // If the global meltup hasn't ignited, we cannot be in an exit phase.
         if (!ignitionActive) {
             this.signals[symbol] = signal;
             this.updateUI(symbol, signal);
@@ -1394,7 +1357,6 @@ class StockMeltupExit {
         const volumes = data.indicators.quote[0].volume.filter(v => v !== null);
 
         // Universal Confirmation Filter: SPY Divergence
-        // "When SPY stops making new highs while these stocks still do"
         let spyDivergence = false;
         if (spyData && spyData.indicators.quote[0].close) {
             const spyCloses = spyData.indicators.quote[0].close.filter(c => c !== null);
@@ -1403,25 +1365,58 @@ class StockMeltupExit {
             const stockHigh20 = Math.max(...closes.slice(-20));
             const stockCurrent = closes[closes.length - 1];
 
-            // SPY < 98% of 20d High AND Stock > 98% of 20d High
             if (spyCurrent < spyHigh20 * 0.98 && stockCurrent > stockHigh20 * 0.98) {
                 spyDivergence = true;
             }
         }
 
-        if (symbol === 'NVDA') {
-            signal = this.checkNVDA(closes, highs, lows, volumes, spyDivergence);
-        } else if (symbol === 'SMCI') {
-            signal = this.checkSMCI(closes, highs, lows, volumes, spyDivergence);
-        } else if (symbol === 'META') {
-            signal = this.checkMETA(closes, highs, lows, opens, volumes, spyDivergence);
-        } else if (symbol === 'MSFT') {
-            signal = this.checkMSFT(closes, highs, lows, volumes, spyDivergence);
-        }
+        // Standardized Regime-Based Logic
+        signal = this.getRegimeExitSignal(closes, highs, lows, volumes, spyDivergence);
 
         this.signals[symbol] = signal;
         this.updateUI(symbol, signal);
         return signal;
+    }
+
+    getRegimeExitSignal(closes, highs, lows, volumes, spyDivergence) {
+        const currentPrice = closes[closes.length - 1];
+        const rsi = calculateRSI(closes).pop();
+        const sma20 = calculateSMA(closes, 20);
+        const sma200 = calculateSMA(closes, 200);
+
+        // 1. REGIME SETUP (Are we extended?)
+        const isOverheated = (rsi > 75);
+        // Check if we were extended recently (last 5 days) to catch sharp drops
+        // that might take us below the threshold but still represent a trend break
+        const recentHigh = Math.max(...closes.slice(-5));
+        const isExtended = (sma200 && recentHigh > sma200 * 1.3); // >30% above 200d MA
+
+        // 2. TRIGGER EVENTS (Did something break?)
+        // Dynamic Stop: If extended, use tighter SMA10. Otherwise SMA20.
+        const sma10 = calculateSMA(closes, 10);
+        const stopPrice = isExtended ? sma10 : sma20;
+        const trendBreak = (currentPrice < stopPrice);
+
+        // Blow-off Top: High Vol Reversal
+        const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+        const currentVol = volumes[volumes.length - 1];
+        const isReversal = (currentPrice < closes[closes.length - 2]); // Red day
+        const blowOff = (currentVol > avgVol * 2.5 && isReversal && isExtended);
+
+        // 3. DECISION MATRIX
+        if (blowOff) {
+            return { status: 'EXIT EXECUTION', action: 'SELL 100%', reason: 'Blow-off Top' };
+        }
+
+        if (trendBreak && isExtended) {
+            return { status: 'EXIT EXECUTION', action: 'TRIM 50%', reason: 'Trend Break (20d)' };
+        }
+
+        if (isOverheated || spyDivergence) {
+            return { status: 'DISTRIBUTION', action: 'WATCH', reason: 'Overheated/Div' };
+        }
+
+        return { status: 'SAFE', action: 'HOLD', reason: 'Trend Intact' };
     }
 
     updateUI(symbol, signal) {
@@ -1443,93 +1438,6 @@ class StockMeltupExit {
             el.classList.add('exit'); // Green for EXIT
             statusSpan.textContent = signal.action;
         }
-    }
-
-    checkNVDA(closes, highs, lows, volumes, spyDivergence) {
-        const currentPrice = closes[closes.length - 1];
-        const rsi = calculateRSI(closes).pop();
-
-        // 1. Blow-off Top: +10% day on >2x volume
-        const dailyChange = (currentPrice - closes[closes.length - 2]) / closes[closes.length - 2];
-        const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-        const volRatio = volumes[volumes.length - 1] / avgVol;
-
-        if (dailyChange > 0.10 && volRatio > 2) {
-            return { status: 'EXIT EXECUTION', action: 'SELL 100%', reason: 'Blow-off Top (+10% on 2x Vol)' };
-        }
-
-        // 2. RSI Divergence (Price High, RSI Lower)
-        // Simplified: RSI > 85 is extreme danger
-        if (rsi > 85) {
-            return { status: 'DISTRIBUTION', action: 'TRIM 50%', reason: 'RSI Extreme (>85)' };
-        }
-
-        return { status: 'SAFE', action: 'HOLD', reason: 'Trend Intact' };
-    }
-
-    checkSMCI(closes, highs, lows, volumes, spyDivergence) {
-        const currentPrice = closes[closes.length - 1];
-
-        // 1. Double Top with SPY Divergence
-        // (Requires pattern recognition, simplified to: Price < 20d MA AND SPY Divergence)
-        const sma20 = calculateSMA(closes, 20);
-        if (currentPrice < sma20 && spyDivergence) {
-            return { status: 'EXIT EXECUTION', action: 'SELL 100%', reason: 'Trend Break + SPY Div' };
-        }
-
-        // 2. 20% Drop from Highs
-        const high20 = Math.max(...highs.slice(-20));
-        if (currentPrice < high20 * 0.80) {
-            return { status: 'EXIT EXECUTION', action: 'SELL 100%', reason: '20% Drawdown' };
-        }
-
-        return { status: 'SAFE', action: 'HOLD', reason: 'Trend Intact' };
-    }
-
-    checkMETA(closes, highs, lows, opens, volumes, spyDivergence) {
-        const currentPrice = closes[closes.length - 1];
-        const rsi = calculateRSI(closes).pop();
-
-        // Extended: Price > 40% above 200d MA (approx)
-        const sma200 = calculateSMA(closes, 200);
-        const extended = (currentPrice > sma200 * 1.4);
-
-        let warning = (rsi > 75 && extended);
-
-        // 2. EXIT EXECUTION
-        // Close below 5d MA
-        const sma5 = calculateSMA(closes, 5);
-        const breakSMA5 = currentPrice < sma5;
-
-        // Failed bounce (Lower high than previous)
-        const lowerHigh = highs[highs.length - 1] < highs[highs.length - 2];
-
-        if (breakSMA5 && lowerHigh && extended) {
-            return { status: 'EXIT EXECUTION', action: 'TRIM 40%', reason: 'Trend Break' };
-        } else if (warning || spyDivergence) {
-            return { status: 'DISTRIBUTION', action: 'WATCH', reason: 'RSI > 75 + Ext' };
-        }
-        return { status: 'ACTIVE MELTUP', action: 'HOLD', reason: 'Trend Intact' };
-    }
-
-    checkMSFT(closes, highs, lows, opens, volumes, spyDivergence) {
-        // MSFT Logic (Conservative)
-        const rsi = calculateRSI(closes).pop();
-        const sma50 = calculateSMA(closes, 50);
-        const currentPrice = closes[closes.length - 1];
-
-        // 1. WARNING: RSI > 75 + Divergence (Price High, RSI Lower High - simplified to just RSI > 75 for now)
-        let warning = (rsi > 75);
-
-        // 2. EXIT: Close below 50d MA
-        const breakSMA50 = currentPrice < sma50;
-
-        if (breakSMA50) {
-            return { status: 'EXIT EXECUTION', action: 'TRIM 30%', reason: 'Trend Break (50d)' };
-        } else if (warning || spyDivergence) {
-            return { status: 'DISTRIBUTION', action: 'WATCH', reason: 'RSI > 75' };
-        }
-        return { status: 'ACTIVE MELTUP', action: 'HOLD', reason: 'Trend Intact' };
     }
 }
 
