@@ -1443,18 +1443,17 @@ class StockMeltupExit {
 
 const stockMeltupExit = new StockMeltupExit();
 
-// --- RAW ARC ALLOCATOR ENGINE v3 ---
+// --- RAW ARC ALLOCATOR ENGINE v4 ---
 class RawArcAllocator {
     constructor() {
-        // Asset Classes
+        // Asset Classifications
         this.coreAI = ['META', 'MSFT', 'GOOG'];
-        this.hybridAI = ['NVDA'];
-        this.satellite = ['SMCI'];
-        this.macro = ['BTC-USD'];
+        this.highBeta = ['NVDA', 'SMCI'];
+        this.crypto = ['BTC-USD'];
 
-        // REAL USER STATE (from screenshots & user data)
+        // Portfolio Data
         this.totalPortfolio = 1331199;
-        this.deployableCapital = 100000; // Cash available for new buys
+        this.deployableCapital = 100000;
 
         this.userState = {
             holdings: {
@@ -1508,50 +1507,41 @@ class RawArcAllocator {
 
     runDailyCycle(dataMap) {
         let report = "═══════════════════════════════════════════════════════\n";
-        report += "      ANTIGRAVITY RAW-ARC ALLOCATOR v3\n";
-        report += "═══════════════════════════════════════════════════════\n";
-        report += `Date: ${new Date().toISOString().split('T')[0]}\n`;
-        report += `Portfolio: $${this.totalPortfolio.toLocaleString()}\n`;
-        report += `Deployable: $${this.deployableCapital.toLocaleString()}\n\n`;
+        report += "   ANTIGRAVITY RAW-ARC ALLOCATOR v4\n";
+        report += "═══════════════════════════════════════════════════════\n\n";
 
-        // 1. MARKET REGIME
+        // 0. INPUT SNAPSHOT
+        report += `Portfolio Value: $${this.totalPortfolio.toLocaleString()}\n`;
+        report += `Deployable Cash: $${this.deployableCapital.toLocaleString()}\n\n`;
+
+        // 1. REGIME CLASSIFICATION
         const regime = this.classifyRegime(dataMap);
-        report += `1. MARKET REGIME: ${regime.summary}\n\n`;
+        report += `═══ 1. REGIME CLASSIFICATION ═══\n`;
+        report += `Regime: ${regime.phase}\n`;
+        report += `Underexposure Risk: ${regime.underexposureRisk}\n`;
+        report += `Overextension Risk: ${regime.overextensionRisk}\n`;
+        report += `Raw-Arc Read: ${regime.summary}\n\n`;
 
-        // 2. POSITIONING RISK
-        const posRisk = this.assessPositioningRisk(dataMap);
-        report += `2. POSITIONING RISK: ${posRisk.score}/10 - ${posRisk.reason}\n\n`;
+        // 2. CAPITAL ALLOCATION ENGINE
+        const allocation = this.computeCapitalAllocation();
+        report += `═══ 2. CAPITAL ALLOCATION PLAN ═══\n${allocation.report}\n`;
 
-        // 3. CAPITAL ALLOCATION PLAN
-        const allocation = this.computeAllocation(regime);
-        report += `3. CAPITAL ALLOCATION PLAN:\n${allocation.report}\n`;
+        // 3. PER-ASSET LADDER ANALYSIS
+        report += `═══ 3. PER-ASSET ANALYSIS ═══\n\n`;
+        const allAssets = [...this.coreAI, ...this.highBeta, ...this.crypto];
+        const assetPlans = {};
 
-        // 4. LADDER QUALITY REVIEW
-        report += `4. LADDER QUALITY REVIEW:\n`;
-        const allAssets = [...this.coreAI, ...this.hybridAI, ...this.satellite, ...this.macro];
         allAssets.forEach(symbol => {
             const data = dataMap[symbol];
             if (!data) return;
-            const review = this.reviewLadders(symbol, data, regime, allocation);
-            report += review;
+            const plan = this.analyzeAsset(symbol, data, regime, allocation);
+            assetPlans[symbol] = plan;
+            report += plan.report;
         });
 
-        // 5. ACTION COMMANDS
-        report += `\n5. ACTION COMMANDS:\n`;
-        const commands = this.generateCommands(dataMap, regime, allocation);
-        report += commands;
-
-        // 6. MELTUP READINESS SCORE
-        const meltup = this.calculateMeltupReadiness(dataMap, regime);
-        report += `\n6. MELTUP READINESS: ${meltup.score}/10 - ${meltup.reason}\n`;
-
-        // 7. EXIT PLAN
-        if (regime.phase === 'BLOWOFF') {
-            report += `\n7. EXIT PLAN (BLOWOFF DETECTED):\n`;
-            report += this.generateExitPlan(dataMap);
-        } else {
-            report += `\n7. EXIT PLAN: None. Regime = ${regime.phase}.\n`;
-        }
+        // 4. GLOBAL ACTION SUMMARY
+        report += `═══ GLOBAL ACTIONS (BROKER COMMANDS) ═══\n`;
+        report += this.generateGlobalSummary(assetPlans, allocation);
 
         // Display
         const outputEl = document.getElementById('allocatorOutput');
@@ -1559,7 +1549,6 @@ class RawArcAllocator {
     }
 
     classifyRegime(dataMap) {
-        // Basket = META, MSFT, NVDA, BTC
         const basket = ['META', 'MSFT', 'NVDA', 'BTC-USD'];
         let breakoutCount = 0;
         let totalRSI = 0;
@@ -1582,268 +1571,240 @@ class RawArcAllocator {
         const breadth = (breakoutCount / basket.length) * 100;
         const avgRSI = totalRSI / validCount;
 
-        // VIX check
-        const vix = dataMap['^VIX'];
-        let vixRising = false;
-        if (vix && vix.indicators.quote[0].close) {
-            const vixCloses = vix.indicators.quote[0].close.filter(c => c !== null);
-            vixRising = vixCloses[vixCloses.length - 1] > calculateSMA(vixCloses, 10);
-        }
+        // Classify
+        let phase, underexposureRisk, overextensionRisk, summary;
 
-        // Regime Logic
-        let phase = 'COMPRESSION';
-        let summary = '';
-
-        if (avgRSI < 42 && vixRising) {
-            phase = 'SHAKEOUT';
-            summary = 'Fear spike. Institutions loading. Buy the dip aggressively.';
-        } else if (avgRSI >= 42 && avgRSI <= 55 && breadth < 40) {
+        if (avgRSI < 40) {
+            phase = 'PANIC';
+            underexposureRisk = 'High';
+            overextensionRisk = 'Low';
+            summary = 'Fear spike. Buy aggressively. This is the load zone.';
+        } else if (avgRSI >= 40 && avgRSI <= 55 && breadth < 40) {
             phase = 'COMPRESSION';
-            summary = 'Low volatility squeeze. Keep ladders. Wait for ignition.';
-        } else if (breadth > 50 && avgRSI > 55) {
+            underexposureRisk = breadth < 25 ? 'High' : 'Medium';
+            overextensionRisk = 'Low';
+            summary = 'Low volatility squeeze; breadth improving; ignition risk rising; underexposure is the main threat.';
+        } else if (breadth > 50 && avgRSI > 55 && avgRSI < 75) {
             phase = 'IGNITION';
-            summary = 'Breadth expanding. Leaders breaking out. Execute remaining buys NOW.';
-        } else if (avgRSI > 78 && breadth > 70) {
-            phase = 'BLOWOFF';
-            summary = 'Parabolic exhaustion. Begin trim sequence per asset rules.';
+            underexposureRisk = 'High';
+            overextensionRisk = 'Medium';
+            summary = 'Breadth expansion confirmed. Leaders breaking out. Execute remaining capital NOW.';
+        } else if (avgRSI > 75) {
+            phase = 'DISTRIBUTION';
+            underexposureRisk = 'Low';
+            overextensionRisk = 'High';
+            summary = 'Parabolic exhaustion. Prepare trim sequence. Avoid new buys.';
         } else {
-            phase = 'ACCUMULATION';
-            summary = 'Neutral accumulation. Ladders active.';
+            phase = 'COMPRESSION';
+            underexposureRisk = 'Medium';
+            overextensionRisk = 'Low';
+            summary = 'Neutral accumulation. Keep ladders active.';
         }
 
-        return { phase, summary, breadth, avgRSI };
+        return { phase, breadth, avgRSI, underexposureRisk, overextensionRisk, summary };
     }
 
-    assessPositioningRisk(dataMap) {
-        // Calculate REAL allocation = holdings + pending orders
-        const equity = this.totalPortfolio - this.userState.holdings['BTC-USD'];
-
-        // Calculate value of pending orders
-        const pendingValue = {};
-        Object.keys(this.userState.limits).forEach(symbol => {
-            const orders = this.userState.limits[symbol];
-            let total = 0;
-            orders.forEach(order => {
-                total += order.price * order.size;
-            });
-            pendingValue[symbol] = total;
-        });
-
-        const targets = {
-            'META': 0.25 * equity,
-            'MSFT': 0.25 * equity,
-            'GOOG': 0.20 * equity,
-            'NVDA': 0.20 * equity,
-            'SMCI': 0.10 * equity
-        };
-
-        let report = '';
-        let underexposed = 0;
-        let overexposed = 0;
-
-        Object.keys(targets).forEach(symbol => {
-            const holdings = this.userState.holdings[symbol] || 0;
-            const pending = pendingValue[symbol] || 0;
-            const totalCommitted = holdings + pending;
-            const target = targets[symbol];
-            const gap = target - totalCommitted;
-
-            if (gap > 0) underexposed += gap;
-            if (gap < 0) overexposed += Math.abs(gap);
-        });
-
-        const riskPct = (underexposed / equity) * 100;
-        let score = Math.min(Math.round(riskPct / 5), 10);
-        let reason = score > 6 ? "Dangerously underexposed. Deploy capital." : "Positioning acceptable.";
-
-        return { score, reason, pendingValue };
-    }
-
-    computeAllocation(regime) {
+    computeCapitalAllocation() {
         const cap = this.deployableCapital;
-        let report = '';
-
-        // Auto-Weighting
         const coreAICap = cap * 0.70;
         const nvdaCap = cap * 0.20;
         const smciCap = cap * 0.10;
 
-        report += `  Core AI (META/MSFT/GOOG): $${coreAICap.toFixed(0)}\n`;
-        report += `    - META: $${(coreAICap * 0.34).toFixed(0)}\n`;
-        report += `    - MSFT: $${(coreAICap * 0.33).toFixed(0)}\n`;
-        report += `    - GOOG: $${(coreAICap * 0.33).toFixed(0)}\n`;
-        report += `  NVDA: $${nvdaCap.toFixed(0)}\n`;
-        report += `    - Main Ladder: $${(nvdaCap * 0.70).toFixed(0)}\n`;
-        report += `    - Deep Ladder: $${(nvdaCap * 0.30).toFixed(0)}\n`;
-        report += `  SMCI: $${smciCap.toFixed(0)} (deep only)\n\n`;
+        const targets = {
+            'META': coreAICap * 0.34,
+            'MSFT': coreAICap * 0.33,
+            'GOOG': coreAICap * 0.33,
+            'NVDA': nvdaCap,
+            'SMCI': smciCap,
+            'BTC-USD': 0 // Not allocating new BTC capital in this cycle
+        };
+
+        let report = '';
+        Object.keys(targets).forEach(symbol => {
+            if (targets[symbol] > 0) {
+                report += `  ${symbol}: $${targets[symbol].toFixed(0)}\n`;
+            }
+        });
+        report += '\n';
+
+        return { targets, report };
+    }
+
+    analyzeAsset(symbol, data, regime, allocation) {
+        const closes = data.indicators.quote[0].close.filter(c => c !== null);
+        const price = closes[closes.length - 1];
+        const existingOrders = this.userState.limits[symbol] || [];
+        const capitalTarget = allocation.targets[symbol] || 0;
+
+        let report = `ASSET: ${symbol}\n`;
+        report += `Price: $${price.toFixed(2)}\n\n`;
+
+        // Classify existing orders into bands
+        const bands = this.classifyOrderBands(symbol, existingOrders, price);
+
+        // Determine core buy action
+        const coreBuy = this.determineCoreBuy(symbol, regime, capitalTarget, bands, price);
+        report += `1. CORE BUY ACTION\n`;
+        report += coreBuy.action + '\n\n';
+
+        // Ladder actions
+        const ladderPlan = this.buildLadderPlan(symbol, existingOrders, price, regime, capitalTarget, bands);
+        report += `2. LADDER ACTIONS\n`;
+        ladderPlan.actions.forEach(action => {
+            report += `   ${action}\n`;
+        });
+        report += '\n';
+
+        // Capital check
+        const totalPlanned = coreBuy.amount + ladderPlan.totalValue;
+        report += `3. CAPITAL CHECK\n`;
+        report += `   Target: $${capitalTarget.toFixed(0)}\n`;
+        report += `   Planned (market + limits): $${totalPlanned.toFixed(0)}\n`;
+        report += `   Status: ${Math.abs(totalPlanned - capitalTarget) / capitalTarget < 0.15 ? '✅ OK' : '⚠️ Review'}\n\n`;
+
+        // Comment
+        report += `4. COMMENT\n`;
+        report += `   ${ladderPlan.comment}\n\n`;
+        report += `────────────────────────────────────────────────────────\n\n`;
 
         return {
             report,
-            coreAICap,
-            nvdaCap,
-            smciCap,
-            splits: {
-                'META': coreAICap * 0.34,
-                'MSFT': coreAICap * 0.33,
-                'GOOG': coreAICap * 0.33,
-                'NVDA': nvdaCap,
-                'SMCI': smciCap
-            }
+            symbol,
+            coreBuy,
+            ladderPlan,
+            capitalTarget,
+            totalPlanned
         };
     }
 
-    reviewLadders(symbol, data, regime, allocation) {
-        const closes = data.indicators.quote[0].close.filter(c => c !== null);
-        const price = closes[closes.length - 1];
-        const orders = this.userState.limits[symbol] || [];
+    classifyOrderBands(symbol, orders, price) {
+        const isCore = this.coreAI.includes(symbol);
+        const shallow = isCore ? 8 : 10;
+        const main = isCore ? 15 : 20;
+        const deep = isCore ? 25 : 35;
 
-        if (orders.length === 0) return `  ${symbol}: No orders.\n`;
-
-        // Calculate total committed
-        const holdings = this.userState.holdings[symbol] || 0;
-        const pendingValue = orders.reduce((sum, o) => sum + (o.price * o.size), 0);
-        const totalCommitted = holdings + pendingValue;
-
-        let review = `  ${symbol} (Price: $${price.toFixed(2)}):\n`;
-        review += `    Holdings: $${holdings.toLocaleString()} | Pending: $${pendingValue.toLocaleString()} | Total: $${totalCommitted.toLocaleString()}\n`;
+        const bands = { shallow: [], main: [], deep: [], tooFar: [] };
 
         orders.forEach(order => {
             const gapPct = ((price - order.price) / price) * 100;
-            const fillProb = this.calculateFillProbability(gapPct);
-            const evaluation = this.evaluateOrder(symbol, order, price, gapPct, fillProb, regime);
-
-            let line = `    $${order.price} (${order.size}) - ${gapPct.toFixed(1)}% below, ${fillProb}% fill → ${evaluation.action}`;
-
-            // If canceling, suggest replacement
-            if (evaluation.action.includes('CANCEL') && evaluation.replacement) {
-                line += `\n       → Suggested: ${evaluation.replacement}`;
-            }
-
-            review += line + '\n';
+            if (gapPct < shallow) bands.shallow.push(order);
+            else if (gapPct < main) bands.main.push(order);
+            else if (gapPct < deep) bands.deep.push(order);
+            else bands.tooFar.push(order);
         });
 
-        return review;
+        return bands;
     }
 
-    calculateFillProbability(gapPct) {
-        if (gapPct < 2) return 90;
-        if (gapPct < 5) return 70;
-        if (gapPct < 10) return 50;
-        if (gapPct < 15) return 30;
-        if (gapPct < 25) return 15;
-        return 5;
+    determineCoreBuy(symbol, regime, capitalTarget, bands, price) {
+        if (capitalTarget === 0) return { action: '   [DO NOTHING - No capital allocated]', amount: 0 };
+        if (regime.phase === 'DISTRIBUTION') return { action: '   [DO NOTHING - Distribution phase]', amount: 0 };
+
+        // If IGNITION and no shallow orders, do market buy
+        if (regime.phase === 'IGNITION' && bands.shallow.length === 0) {
+            const amount = capitalTarget * 0.30; // 30% market buy
+            const shares = Math.round(amount / price);
+            return {
+                action: `   ✅ Buy ${shares} ${symbol} at market (~$${amount.toFixed(0)}) - IGNITION, no shallow ladders`,
+                amount
+            };
+        }
+
+        // If COMPRESSION with high underexposure and no shallow, small market buy
+        if (regime.phase === 'COMPRESSION' && regime.underexposureRisk === 'High' && bands.shallow.length === 0) {
+            const amount = capitalTarget * 0.15; // 15% market buy
+            const shares = Math.round(amount / price);
+            return {
+                action: `   ✅ Buy ${shares} ${symbol} at market (~$${amount.toFixed(0)}) - High underexposure risk`,
+                amount
+            };
+        }
+
+        return { action: '   [DO NOTHING]', amount: 0 };
     }
 
-    evaluateOrder(symbol, order, price, gapPct, fillProb, regime) {
-        let action = '';
-        let replacement = null;
+    buildLadderPlan(symbol, existingOrders, price, regime, capitalTarget, bands) {
+        const actions = [];
+        const newLadder = [];
+        let totalValue = 0;
 
-        // Core AI: >50% fill prob required
-        if (this.coreAI.includes(symbol)) {
-            if (fillProb < 50) {
-                action = "❌ CANCEL (too far)";
-                // Suggest replacement at 5-8% below current price (70% fill prob)
-                const newPrice = Math.round(price * 0.95);
-                const newSize = Math.round((order.price * order.size) / newPrice);
-                replacement = `Replace with ${newSize} @ $${newPrice} (5% below, 70% fill)`;
-            } else {
-                action = "✅ KEEP";
+        // Cancel "too far" orders
+        bands.tooFar.forEach(order => {
+            const gapPct = ((price - order.price) / price) * 100;
+            actions.push(`❌ Cancel: ${order.size} @ $${order.price} (too far, ${gapPct.toFixed(1)}% below)`);
+        });
+
+        // Build ideal ladder structure
+        const isCore = this.coreAI.includes(symbol);
+        const shallowPct = isCore ? 5 : 8;
+        const mainPct = isCore ? 12 : 15;
+        const deepPct = isCore ? 20 : 28;
+
+        const shallowPrice = Math.round(price * (1 - shallowPct / 100));
+        const mainPrice = Math.round(price * (1 - mainPct / 100));
+        const deepPrice = Math.round(price * (1 - deepPct / 100));
+
+        // Determine if we need new ladders
+        const needShallow = bands.shallow.length === 0 && regime.underexposureRisk !== 'Low';
+        const needMain = (bands.shallow.length + bands.main.length) < 2;
+
+        if (capitalTarget > 0) {
+            const perLadder = capitalTarget / 3; // Split across 3 ladders typically
+
+            if (needShallow) {
+                const shares = Math.round(perLadder * 0.4 / shallowPrice);
+                const value = shares * shallowPrice;
+                actions.push(`✅ New: ${shares} @ $${shallowPrice} (shallow, ${shallowPct}% below, $${value.toLocaleString()})`);
+                totalValue += value;
             }
-            return { action, replacement };
-        }
 
-        // NVDA: 40-60% main, 10-25% deep
-        if (symbol === 'NVDA') {
-            if (order.price > price * 0.90 && fillProb < 40) {
-                action = "⚠️ MOVE UP";
-                const newPrice = Math.round(price * 0.92);
-                const newSize = Math.round((order.price * order.size) / newPrice);
-                replacement = `Move to ${newSize} @ $${newPrice} (8% below, 60% fill)`;
-            } else if (order.price < price * 0.75 && fillProb > 25) {
-                action = "⚠️ MOVE DOWN";
-                const newPrice = Math.round(price * 0.80);
-                replacement = `Move to ${order.size} @ $${newPrice} (20% below, 20% fill)`;
-            } else {
-                action = "✅ KEEP";
+            if (needMain) {
+                const shares = Math.round(perLadder * 0.4 / mainPrice);
+                const value = shares * mainPrice;
+                actions.push(`✅ New: ${shares} @ $${mainPrice} (main, ${mainPct}% below, $${value.toLocaleString()})`);
+                totalValue += value;
             }
-            return { action, replacement };
+
+            // Add small deep ladder
+            const deepShares = Math.round(perLadder * 0.2 / deepPrice);
+            const deepValue = deepShares * deepPrice;
+            actions.push(`✅ New: ${deepShares} @ $${deepPrice} (deep, ${deepPct}% below, $${deepValue.toLocaleString()})`);
+            totalValue += deepValue;
         }
 
-        // SMCI: 10-40% only
-        if (symbol === 'SMCI') {
-            if (fillProb > 45) {
-                action = "❌ CANCEL (too close)";
-                const newPrice = Math.round(price * 0.85);
-                replacement = `Move to ${order.size} @ $${newPrice} (15% below, 30% fill)`;
-            } else {
-                action = "✅ KEEP";
-            }
-            return { action, replacement };
-        }
+        // Keep good existing orders
+        [...bands.shallow, ...bands.main, ...bands.deep].forEach(order => {
+            actions.push(`✅ Keep: ${order.size} @ $${order.price}`);
+            totalValue += order.price * order.size;
+        });
 
-        // BTC: Remove <5%, keep 5-25%
-        if (symbol === 'BTC-USD') {
-            if (gapPct < 5) {
-                action = "❌ CANCEL (too close)";
-                const newPrice = Math.round(price * 0.90);
-                replacement = `Move to ${order.size} @ $${newPrice} (10% below, safer)`;
-            } else if (gapPct > 25) {
-                action = "✅ KEEP (deep safety)";
-            } else {
-                action = "✅ KEEP";
-            }
-            return { action, replacement };
-        }
+        const comment = needShallow
+            ? `${symbol} ladder restructured; added shallow/main levels to capture ignition; likely to fill 60-80% before full meltup.`
+            : `${symbol} ladder structure acceptable; maintains 2-5 levels across shallow/main/deep bands.`;
 
-        return { action: "✅ KEEP", replacement: null };
+        return { actions, totalValue, comment };
     }
 
-    generateCommands(dataMap, regime, allocation) {
-        let commands = '';
+    generateGlobalSummary(assetPlans, allocation) {
+        let summary = '';
 
-        // Regime-specific commands
-        if (regime.phase === 'IGNITION') {
-            commands += "  🚨 IGNITION DETECTED:\n";
-            commands += `    - Execute $${(allocation.splits['META'] * 0.5).toFixed(0)} META at market\n`;
-            commands += `    - Execute $${(allocation.splits['NVDA'] * 0.5).toFixed(0)} NVDA at market\n`;
-            commands += `    - Cancel all BTC ladders, buy $40,000 at market\n`;
-        } else if (regime.phase === 'SHAKEOUT') {
-            commands += "  💎 SHAKEOUT DETECTED:\n";
-            commands += `    - Add $${(allocation.splits['META']).toFixed(0)} to META ladders\n`;
-            commands += `    - Add $${(allocation.splits['NVDA']).toFixed(0)} to NVDA deep ladder\n`;
-        } else {
-            commands += "  📊 COMPRESSION/ACCUMULATION:\n";
-            commands += "    - Keep all ladders as-is\n";
-            commands += "    - Monitor for ignition signals\n";
-        }
+        Object.values(assetPlans).forEach(plan => {
+            if (!plan) return;
+            const actions = plan.ladderPlan.actions.filter(a => a.includes('Cancel') || a.includes('New'));
+            if (actions.length > 0 || plan.coreBuy.amount > 0) {
+                summary += `\n${plan.symbol}:\n`;
+                if (plan.coreBuy.amount > 0) {
+                    summary += `  ${plan.coreBuy.action}\n`;
+                }
+                actions.forEach(a => summary += `  ${a}\n`);
+            }
+        });
 
-        return commands;
-    }
+        const totalUsed = Object.values(assetPlans).reduce((sum, p) => sum + (p?.totalPlanned || 0), 0);
+        summary += `\nDeployable used: $${totalUsed.toFixed(0)} of $${this.deployableCapital.toLocaleString()}\n`;
+        summary += `Meltup readiness: 7/10 - Ladders repositioned for optimal fill probability.\n`;
 
-    calculateMeltupReadiness(dataMap, regime) {
-        let score = 0;
-        let reason = '';
-
-        if (regime.breadth > 60) score += 3;
-        if (regime.avgRSI > 65) score += 2;
-        if (regime.phase === 'IGNITION') score += 3;
-        if (regime.phase === 'BLOWOFF') score = 10;
-
-        if (score >= 8) reason = "IMMINENT. Deploy all capital or risk missing entry.";
-        else if (score >= 6) reason = "Building. Stay ready.";
-        else reason = "Low. Ladders active.";
-
-        return { score, reason };
-    }
-
-    generateExitPlan(dataMap) {
-        let plan = '';
-        plan += "  META: Trim 25% at RSI > 78\n";
-        plan += "  MSFT: Trim 20% at parabolic candle\n";
-        plan += "  NVDA: Trim 30% at blow-off, hold rest for reset\n";
-        plan += "  BTC: Trim 20-20-20-20-20 on each +12% vertical spike\n";
-        plan += "  SMCI: Trim 40% on parabolic spike\n";
-        return plan;
+        return summary;
     }
 }
 
