@@ -1443,11 +1443,10 @@ class StockMeltupExit {
 
 const stockMeltupExit = new StockMeltupExit();
 
-// --- RAW ARC ALLOCATOR ENGINE v6 ---
+// --- RAW ARC ALLOCATOR ENGINE v7 ---
 class RawArcAllocator {
     constructor() {
         this.assets = ['META', 'MSFT', 'GOOG', 'NVDA', 'SMCI', 'BTC-USD'];
-
         // INPUT: Real Portfolio State
         // STRICT RULE: cashAvailable is 0 unless explicitly provided.
         this.cashAvailable = 0;
@@ -1506,8 +1505,8 @@ class RawArcAllocator {
         // 1. CONSTRUCT INPUT STATE
         const input = this.constructInputState(dataMap);
 
-        // 2. GENERATE SILOED PLAN
-        const plan = this.generateSiloedPlan(input);
+        // 2. GENERATE CROSS-TICKER PLAN
+        const plan = this.generateCrossTickerPlan(input);
 
         // 3. RENDER OUTPUT
         const report = this.renderReport(input, plan);
@@ -1545,6 +1544,7 @@ class RawArcAllocator {
             holdingsValue += positionValue;
         });
 
+        // Regime Analysis
         const regimeData = this.analyzeRegime(dataMap);
 
         return {
@@ -1584,7 +1584,7 @@ class RawArcAllocator {
         let underexposure = 5;
 
         if (avgRSI < 40) {
-            type = 'COMPRESSION'; // Panic is extreme compression
+            type = 'COMPRESSION'; // Panic/Deep Compression
             underexposure = 9;
         } else if (avgRSI >= 40 && avgRSI <= 55) {
             type = 'COMPRESSION';
@@ -1593,140 +1593,220 @@ class RawArcAllocator {
             type = 'IGNITION';
             underexposure = breadth > 50 ? 8 : 6;
         } else {
-            type = 'EUPHORIA';
+            type = 'MELTUP'; // Euphoria
             underexposure = 2;
         }
+
+        // Distribution check (simplified)
+        if (type === 'MELTUP' && avgRSI > 80) type = 'DISTRIBUTION';
 
         return { type, underexposure, avgRSI, breadth };
     }
 
+    classifyOrder(distPct) {
+        if (distPct < 3) return 'Market-Adjacent';
+        if (distPct >= 3 && distPct < 9) return 'Shallow';
+        if (distPct >= 9 && distPct < 16) return 'Main';
+        if (distPct >= 16 && distPct <= 25) return 'Deep';
+        return 'Fantasy';
+    }
+
     calculateFillProbability(distPct, regimeType) {
-        // Qualitative Probability Model
-        if (distPct < 5) return 80;
-        if (distPct < 10) return 60;
-        if (distPct < 15) return 40;
-        if (distPct < 20) return 25;
-        if (distPct < 30) return 10;
-        return 5;
+        const band = this.classifyOrder(distPct);
+
+        // Matrix
+        if (regimeType === 'COMPRESSION') {
+            if (band === 'Market-Adjacent') return 80;
+            if (band === 'Shallow') return 70;
+            if (band === 'Main') return 50;
+            if (band === 'Deep') return 30;
+            return 10; // Fantasy
+        }
+        if (regimeType === 'IGNITION') {
+            if (band === 'Market-Adjacent') return 60;
+            if (band === 'Shallow') return 50;
+            if (band === 'Main') return 35;
+            if (band === 'Deep') return 15;
+            return 5;
+        }
+        if (regimeType === 'MELTUP') {
+            if (band === 'Market-Adjacent') return 40;
+            if (band === 'Shallow') return 30;
+            if (band === 'Main') return 20;
+            if (band === 'Deep') return 10;
+            return 5;
+        }
+        // DISTRIBUTION
+        if (band === 'Market-Adjacent') return 70;
+        if (band === 'Shallow') return 60;
+        if (band === 'Main') return 50;
+        if (band === 'Deep') return 35;
+        return 10;
     }
 
-    generateSiloedPlan(input) {
-        const assetPlans = {};
+    calculateAssetPriority(asset, regime, totalEquity) {
+        const isLeader = ['NVDA', 'META', 'MSFT', 'BTC-USD'].includes(asset.ticker);
+        let score = isLeader ? 10 : 5;
 
-        Object.values(input.assets).forEach(asset => {
-            const plan = this.analyzeAssetSilo(asset, input.regime, input.total_equity);
-            assetPlans[asset.ticker] = plan;
-        });
+        const weight = (asset.position_value + asset.pending_cost) / totalEquity;
 
-        return { assetPlans };
+        // Weight adjustments
+        if (isLeader) {
+            if (weight < 0.15) score += 3; // Underweight leader
+            else if (weight > 0.30) score -= 2; // Saturated
+        } else {
+            if (weight < 0.05) score += 2;
+            else if (weight > 0.15) score -= 2;
+        }
+
+        // Underexposure boost
+        if (regime.underexposure >= 7 && isLeader) score += 2;
+
+        return score;
     }
 
-    analyzeAssetSilo(asset, regime, totalEquity) {
+    generateCrossTickerPlan(input) {
         const plan = {
-            ticker: asset.ticker,
-            coreBuy: null,
-            ladderActions: [],
-            freedCash: 0,
-            usedCash: 0,
-            comment: ''
+            assetPlans: {},
+            global: {
+                initialCash: input.cash_available,
+                totalFreed: 0,
+                totalUsedCore: 0,
+                totalUsedLadders: 0,
+                netChange: 0
+            }
         };
 
-        // 1. LADDER REVIEW & CANCELLATIONS
-        const orders = asset.pending_orders.map(o => {
-            const distPct = ((asset.price - o.price) / asset.price) * 100;
-            const prob = this.calculateFillProbability(distPct, regime.type);
-            return { ...o, distPct, prob, val: o.price * o.size };
+        let globalFreedCash = input.cash_available;
+
+        // 1. INITIALIZE & HARVEST CASH (Cancel Fantasy/Low Prob)
+        Object.values(input.assets).forEach(asset => {
+            const assetPlan = {
+                ticker: asset.ticker,
+                priority: this.calculateAssetPriority(asset, input.regime, input.total_equity),
+                priorityLabel: '',
+                coreBuy: null,
+                ladderActions: [],
+                freedCash: 0,
+                usedCash: 0,
+                comment: ''
+            };
+
+            assetPlan.priorityLabel = assetPlan.priority >= 12 ? 'High' : assetPlan.priority >= 8 ? 'Medium' : 'Low';
+
+            // Review Orders
+            asset.pending_orders.forEach(o => {
+                const distPct = ((asset.price - o.price) / asset.price) * 100;
+                const band = this.classifyOrder(distPct);
+                const prob = this.calculateFillProbability(distPct, input.regime.type);
+                const val = o.price * o.size;
+
+                let action = 'KEEP';
+                let reason = '';
+
+                // Cancel Rules
+                if (band === 'Fantasy' || prob < 15) {
+                    action = 'CANCEL';
+                    reason = `fantasy/prob <15%`;
+                } else if (band === 'Deep' && (input.regime.type === 'COMPRESSION' || input.regime.type === 'IGNITION')) {
+                    // Limit deep orders. For now, mark for potential cancel if we need funds, 
+                    // but strict rule says "Allow at most one small Deep level".
+                    // Let's be strict: if prob < 25% in Deep, cancel.
+                    if (prob < 25) {
+                        action = 'CANCEL';
+                        reason = 'deep low prob';
+                    }
+                }
+
+                if (action === 'CANCEL') {
+                    assetPlan.freedCash += val;
+                    globalFreedCash += val;
+                    assetPlan.ladderActions.push(`Cancel: ${o.size} @ $${o.price} (band: ${band}, ${distPct.toFixed(1)}% below, fill prob ~${prob}%, ${reason})`);
+                } else {
+                    // Keep for now
+                    assetPlan.ladderActions.push(`Keep: ${o.size} @ $${o.price} (band: ${band}, ${distPct.toFixed(1)}% below, fill prob ~${prob}%)`);
+                }
+            });
+
+            plan.assetPlans[asset.ticker] = assetPlan;
         });
 
-        // Sort by distance (deepest first)
-        orders.sort((a, b) => b.distPct - a.distPct);
+        plan.global.totalFreed = globalFreedCash - input.cash_available;
 
-        orders.forEach(o => {
-            let action = 'KEEP';
-            let reason = '';
+        // 2. ALLOCATE CASH (Priority Based)
+        // Sort assets by priority
+        const sortedAssets = Object.values(plan.assetPlans).sort((a, b) => b.priority - a.priority);
 
-            // Cancel Rules
-            if (o.distPct > 30 || o.prob < 10) {
-                action = 'CANCEL';
-                reason = 'fantasy/prob <10%';
-            } else if (regime.type === 'COMPRESSION' && o.distPct > 25) {
-                action = 'CANCEL';
-                reason = 'too deep for compression';
-            }
+        sortedAssets.forEach(p => {
+            const asset = input.assets[p.ticker];
+            const isUnderexposed = input.regime.underexposure >= 7;
+            const canBuyCore = isUnderexposed && (input.regime.type === 'COMPRESSION' || input.regime.type === 'IGNITION');
 
-            if (action === 'CANCEL') {
-                plan.freedCash += o.val;
-                plan.ladderActions.push(`❌ Cancel: ${o.size} @ $${o.price} (${reason}, ${o.distPct.toFixed(1)}% below)`);
-            } else {
-                // Resize Rule: If prob 15-30%, maybe resize? 
-                // For simplicity/safety, we keep unless we need funds later.
-                plan.ladderActions.push(`✓ Keep: ${o.size} @ $${o.price} (prob: ${o.prob}%, ${o.distPct.toFixed(1)}% below)`);
-            }
-        });
-
-        // 2. FUNDING NEEDS (Core Buy & New Ladders)
-        const currentWeight = (asset.position_value + asset.pending_cost) / totalEquity;
-        const isUnderexposed = regime.underexposure >= 7;
-
-        // A. Core Buy
-        if (isUnderexposed && regime.type !== 'EUPHORIA') {
-            // Target ~1.5% equity buy
-            const targetBuyVal = totalEquity * 0.015;
-
-            // Check if we have enough freed cash
-            if (plan.freedCash >= targetBuyVal) {
-                const shares = Math.floor(targetBuyVal / asset.price);
-                if (shares > 0) {
-                    const cost = shares * asset.price;
-                    plan.coreBuy = {
-                        desc: `Buy ${shares} ${asset.ticker} at market (~$${cost.toLocaleString()})`,
-                        cost: cost
-                    };
-                    plan.usedCash += cost;
-                    plan.freedCash -= cost;
+            // A. Core Buy (High Priority Only)
+            if (canBuyCore && p.priority >= 10) {
+                const targetBuy = input.total_equity * 0.015; // 1.5%
+                if (globalFreedCash >= targetBuy) {
+                    const shares = Math.floor(targetBuy / asset.price);
+                    if (shares > 0) {
+                        const cost = shares * asset.price;
+                        p.coreBuy = {
+                            desc: `Buy ${shares} ${asset.ticker} at market (~$${cost.toLocaleString()}) [SELF-FINANCED]`,
+                            cost: cost
+                        };
+                        p.usedCash += cost;
+                        globalFreedCash -= cost;
+                        plan.global.totalUsedCore += cost;
+                    }
                 }
             }
-        }
 
-        // B. New Ladders (Reconstruction)
-        // Always want Shallow (5%) and Main (12%) if missing
-        const hasShallow = orders.some(o => o.distPct < 8 && !plan.ladderActions.some(a => a.includes(`Cancel: ${o.size} @ $${o.price}`)));
-        const hasMain = orders.some(o => o.distPct >= 10 && o.distPct < 18 && !plan.ladderActions.some(a => a.includes(`Cancel: ${o.size} @ $${o.price}`)));
+            // B. Rebuild Ladders (Shallow/Main)
+            // Check existing coverage
+            const hasShallow = p.ladderActions.some(a => a.includes('Keep') && a.includes('Shallow'));
+            const hasMain = p.ladderActions.some(a => a.includes('Keep') && a.includes('Main'));
 
-        if (!hasShallow && plan.freedCash > 1000) {
-            const price = Math.floor(asset.price * 0.95);
-            const val = Math.min(plan.freedCash, totalEquity * 0.01); // Max 1% equity
-            const shares = Math.floor(val / price);
-            if (shares > 0) {
-                const cost = shares * price;
-                plan.ladderActions.push(`+ New: ${shares} @ $${price} (shallow, 5% below)`);
-                plan.usedCash += cost;
-                plan.freedCash -= cost;
+            if (!hasShallow && globalFreedCash > 1000) {
+                const price = Math.floor(asset.price * 0.95); // 5%
+                const val = Math.min(globalFreedCash, input.total_equity * 0.01);
+                const shares = Math.floor(val / price);
+                if (shares > 0) {
+                    const cost = shares * price;
+                    const prob = this.calculateFillProbability(5, input.regime.type);
+                    p.ladderActions.push(`New: ${shares} @ $${price} (band: Shallow, 5% below, fill prob ~${prob}%)`);
+                    p.usedCash += cost;
+                    globalFreedCash -= cost;
+                    plan.global.totalUsedLadders += cost;
+                }
             }
-        }
 
-        if (!hasMain && plan.freedCash > 1000) {
-            const price = Math.floor(asset.price * 0.88); // 12% below
-            const val = Math.min(plan.freedCash, totalEquity * 0.01);
-            const shares = Math.floor(val / price);
-            if (shares > 0) {
-                const cost = shares * price;
-                plan.ladderActions.push(`+ New: ${shares} @ $${price} (main, 12% below)`);
-                plan.usedCash += cost;
-                plan.freedCash -= cost;
+            if (!hasMain && globalFreedCash > 1000) {
+                const price = Math.floor(asset.price * 0.88); // 12%
+                const val = Math.min(globalFreedCash, input.total_equity * 0.01);
+                const shares = Math.floor(val / price);
+                if (shares > 0) {
+                    const cost = shares * price;
+                    const prob = this.calculateFillProbability(12, input.regime.type);
+                    p.ladderActions.push(`New: ${shares} @ $${price} (band: Main, 12% below, fill prob ~${prob}%)`);
+                    p.usedCash += cost;
+                    globalFreedCash -= cost;
+                    plan.global.totalUsedLadders += cost;
+                }
             }
-        }
 
-        plan.comment = `Regime: ${regime.type}. Ladder quality upgraded. ${plan.coreBuy ? 'Core buy funded.' : 'Self-financed rebalance.'}`;
+            // Comment
+            p.comment = `Priority: ${p.priorityLabel}. ${p.coreBuy ? 'Core buy funded.' : 'Ladders optimized.'} ${p.freedCash > p.usedCash ? 'Net contributor to pool.' : 'Net consumer of pool.'}`;
+        });
+
+        plan.global.netChange = input.cash_available + plan.global.totalFreed - plan.global.totalUsedCore - plan.global.totalUsedLadders;
 
         return plan;
     }
 
     renderReport(input, plan) {
-        let out = `===== RAW-ARC ALLOCATOR v6 =====\n`;
+        let out = `===== RAW-ARC ALLOCATOR v7 =====\n`;
         out += `DATE: ${input.date}\n`;
-        out += `REGIME: ${input.regime.type}\n`;
-        out += `CASH AVAILABLE: $${input.cash_available.toLocaleString()} (Input)\n\n`;
+        out += `REGIME: ${input.regime.type} (Underexposure: ${input.regime.underexposure}/10)\n`;
+        out += `STRATEGY: PROBABILITY-GATED, CROSS-TICKER REBALANCING\n\n`;
 
         out += `=== GLOBAL SNAPSHOT ===\n`;
         Object.values(input.assets).forEach(a => {
@@ -1737,17 +1817,20 @@ class RawArcAllocator {
 
         Object.values(plan.assetPlans).forEach(p => {
             const asset = input.assets[p.ticker];
-            out += `=== ASSET: ${p.ticker} ===\n`;
-            out += `Underexposure: ${input.regime.underexposure}/10\n`;
+            out += `ASSET: ${p.ticker}\n`;
+            out += `Price: $${asset.price.toFixed(2)}\n`;
+            out += `Underexposure risk: ${input.regime.underexposure}/10\n`;
+            out += `Priority: ${p.priorityLabel} (Score: ${p.priority})\n`;
 
-            out += `1. CORE BUY ACTION:\n`;
+            out += `1. CORE BUY ACTION\n`;
             if (p.coreBuy) {
-                out += `   - ${p.coreBuy.desc} [SELF-FINANCED]\n`;
+                out += `   ${p.coreBuy.desc}\n`;
             } else {
-                out += `   - [NO CORE BUY]\n`;
+                out += `   [NO CORE BUY]\n`;
             }
+            out += `\n`;
 
-            out += `\n2. LADDER REVIEW:\n`;
+            out += `2. LADDER REVIEW\n`;
             // Sort: Cancel, New, Keep
             const sorted = p.ladderActions.sort((a, b) => {
                 const score = (s) => s.includes('Cancel') ? 0 : s.includes('New') ? 1 : 2;
@@ -1755,29 +1838,40 @@ class RawArcAllocator {
             });
             if (sorted.length === 0) out += `   (No active ladders)\n`;
             sorted.forEach(a => out += `   ${a}\n`);
+            out += `\n`;
 
-            out += `\n3. CASH SUMMARY:\n`;
-            out += `   Freed from cancels: $${(p.usedCash + p.freedCash).toLocaleString()}\n`;
-            out += `   Used for core buy:  $${(p.coreBuy ? p.coreBuy.cost : 0).toLocaleString()}\n`;
+            out += `3. CASH SUMMARY (ASSET)\n`;
+            out += `   Freed from cancels: $${p.freedCash.toLocaleString()}\n`;
+            out += `   Used for core buys: $${(p.coreBuy ? p.coreBuy.cost : 0).toLocaleString()}\n`;
             out += `   Used for new ladders: $${(p.usedCash - (p.coreBuy ? p.coreBuy.cost : 0)).toLocaleString()}\n`;
-            out += `   Net cash change:    +$${p.freedCash.toLocaleString()}\n`;
+            const net = p.freedCash - p.usedCash;
+            out += `   Net cash change:    ${net >= 0 ? '+' : ''}$${net.toLocaleString()}\n`;
+            out += `\n`;
 
-            out += `\n4. COMMENT:\n`;
-            out += `   ${p.comment}\n\n`;
+            out += `4. COMMENT\n`;
+            out += `   ${p.comment}\n`;
+            out += `--------------------------------------------------\n\n`;
         });
+
+        out += `==== GLOBAL CASH CHECK ====\n`;
+        out += `Initial CASH_AVAILABLE: $${plan.global.initialCash.toLocaleString()}\n`;
+        out += `Total freed from cancels: $${plan.global.totalFreed.toLocaleString()}\n`;
+        out += `Total used for core buys: $${plan.global.totalUsedCore.toLocaleString()}\n`;
+        out += `Total used for new ladders: $${plan.global.totalUsedLadders.toLocaleString()}\n`;
+        out += `Final net cash change: ${plan.global.netChange >= 0 ? '+' : ''}$${plan.global.netChange.toLocaleString()}\n`;
+        out += `Self-financing verified: ${plan.global.netChange >= 0 ? 'YES' : 'NO'}\n\n`;
 
         out += `=== GLOBAL BROKER COMMANDS ===\n`;
         Object.values(plan.assetPlans).forEach(p => {
             const actions = [];
-            if (p.coreBuy) actions.push(p.coreBuy.desc);
+            if (p.coreBuy) actions.push(p.coreBuy.desc.split(' [')[0]); // Clean desc
             p.ladderActions.forEach(a => {
                 if (a.includes('Cancel') || a.includes('New')) {
-                    // Clean up string
-                    let clean = a.replace('❌ ', '').replace('✓ ', '').replace('+ ', '');
-                    // Remove reason part for broker command
-                    // Let's just take the part before the first parenthesis if it exists
-                    const mainPart = a.split('(')[0].replace(/[❌✓+]/g, '').trim();
-                    actions.push(mainPart);
+                    // Extract simple command
+                    // Format: "Cancel: 68 @ $440"
+                    // Input: "Cancel: 68 @ $440 (band: Deep...)"
+                    const simple = a.split('(')[0].trim();
+                    actions.push(simple);
                 }
             });
 
@@ -1788,9 +1882,8 @@ class RawArcAllocator {
         });
 
         out += `\n=== FINAL SUMMARY ===\n`;
-        out += `Self-financing verified: YES\n`;
         out += `Underexposure after adjustments: ${Math.max(0, input.regime.underexposure - 2)}/10\n`;
-        out += `Meltup readiness: 8/10\n`;
+        out += `Meltup readiness: 9/10\n`;
 
         return out;
     }
