@@ -2886,10 +2886,10 @@ const updateStock = async (symbol, range = '1mo', interval = '1d') => {
                 let suggestedAllocation = 0;
 
                 // Logic: For a "good deal", we want to be near support or -5% to -15% from current
-                const buyPrice = close;
+                const buyPrice = longTermQuotes[longTermQuotes.length - 1];
 
                 // Get 200MA value without mutating the array
-                const ma200Value = ma200 && ma200.length > 0 ? ma200[ma200.length - 1] : buyPrice * 0.85;
+                const ma200Value = sma200 && sma200.length > 0 ? sma200[sma200.length - 1] : buyPrice * 0.85;
 
                 // Determine next buy level based on quality score
                 if (buyQualityScore >= 8) {
