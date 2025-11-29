@@ -2888,11 +2888,8 @@ const updateStock = async (symbol, range = '1mo', interval = '1d') => {
                 // Logic: For a "good deal", we want to be near support or -5% to -15% from current
                 const currentPrice = close;
 
-                // Find the nearest support level below current price
-                // (Assuming we have support/resistance data from earlier)
-                // If we don't, calculate based on 200MA and RSI
-
-                const ma200Value = ma200.pop();
+                // Get 200MA value without mutating the array
+                const ma200Value = ma200 && ma200.length > 0 ? ma200[ma200.length - 1] : currentPrice * 0.85;
 
                 // Determine next buy level based on quality score
                 if (buyQualityScore >= 8) {
