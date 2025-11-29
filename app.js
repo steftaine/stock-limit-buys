@@ -1520,6 +1520,7 @@ class RawArcAllocator {
 
         // 2. GENERATE GLOBAL POOL PLAN (v7.5)
         const plan = this.generateGlobalPoolPlan(input);
+        this.lastPlan = plan; // Store for commit
 
         // 3. RENDER OUTPUT
         const report = this.renderReport(input, plan);
@@ -1527,6 +1528,107 @@ class RawArcAllocator {
         // Display
         const outputEl = document.getElementById('allocatorOutput');
         if (outputEl) outputEl.textContent = report;
+
+        // Enable Confirm Button
+        const confirmBtn = document.getElementById('confirmChangesBtn');
+        if (confirmBtn) {
+            confirmBtn.style.background = 'var(--accent)';
+            confirmBtn.style.cursor = 'pointer';
+            confirmBtn.disabled = false;
+        }
+    }
+
+    commitChanges() {
+        if (!this.lastPlan) return;
+
+        console.log("Committing changes...");
+        const plan = this.lastPlan;
+
+        // 1. Update Cash (Global Pool Logic)
+        // We need to calculate the final cash based on the plan's net change
+        // But simpler: just apply the specific actions to the state
+
+        // We need to be careful. The plan was generated from 'input' state.
+        // We should modify 'this.userState' and 'this.cashAvailable'
+
+        let newCash = this.cashAvailable;
+
+        Object.values(plan.assetPlans).forEach(p => {
+            const ticker = p.ticker;
+            if (!this.userState.limits[ticker]) this.userState.limits[ticker] = [];
+
+            // A. Apply Cancels
+            // We need to identify orders to cancel. 
+            // The plan strings are like "Cancel: 68 @ $440 ..."
+            // We can parse this or just rebuild the limit list based on "Keep" and "New"
+
+            const newLimits = [];
+
+            p.ladderActions.forEach(action => {
+                if (action.includes('Keep') || action.includes('New')) {
+                    // Parse: "Keep: 68 @ $440 ..."
+                    const parts = action.split('@');
+                    const sizePart = parts[0].split(':')[1].trim();
+                    const pricePart = parts[1].split(' ')[1].replace('$', '').trim();
+
+                    newLimits.push({
+                        price: parseFloat(pricePart),
+                        size: parseFloat(sizePart)
+                    });
+                }
+            });
+
+            this.userState.limits[ticker] = newLimits;
+
+            // B. Apply Core Buys
+            if (p.coreBuy) {
+                // "Buy 113 META at market (~$50000)..."
+                // We need to add value to holdings and deduct cash
+                // But wait, the user inputs 'holdings' as value (USD), not shares?
+                // Let's check constructor: 'META': 261772 (Value)
+                // Yes, holdings are in Value.
+
+                this.userState.holdings[ticker] = (this.userState.holdings[ticker] || 0) + p.coreBuy.cost;
+                newCash -= p.coreBuy.cost;
+            }
+
+            // C. Cash from Cancels?
+            // The 'cashAvailable' in the input was 0 (or user input).
+            // The plan calculates 'freedCash'. 
+            // If we are strictly self-financing, the 'finalPool' is what remains of the freed cash.
+            // So newCash = initialCash + totalFreed - totalUsed
+            // Actually, simpler:
+            // newCash = plan.global.finalPool
+            // Because finalPool = initial + freed - used.
+        });
+
+        this.cashAvailable = plan.global.finalPool;
+
+        // 2. Update UI Input
+        const newState = {
+            cash: this.cashAvailable,
+            holdings: this.userState.holdings,
+            limits: this.userState.limits
+        };
+
+        const inputEl = document.getElementById('portfolioInput');
+        if (inputEl) {
+            inputEl.value = JSON.stringify(newState, null, 2);
+        }
+
+        // 3. Feedback
+        alert("Changes Committed! Portfolio state updated.");
+
+        // Disable button
+        const confirmBtn = document.getElementById('confirmChangesBtn');
+        if (confirmBtn) {
+            confirmBtn.style.background = '#333';
+            confirmBtn.style.cursor = 'not-allowed';
+            confirmBtn.disabled = true;
+        }
+
+        // Clear plan
+        this.lastPlan = null;
     }
 
     getUserState() {
@@ -1944,16 +2046,17 @@ const rawArcAllocator = new RawArcAllocator();
 
 // Initialize Button
 document.addEventListener('DOMContentLoaded', () => {
-    const btn = document.getElementById('runAllocatorBtn');
-    if (btn) {
-        btn.addEventListener('click', () => {
-            if (window.marketDataCache && Object.keys(window.marketDataCache).length > 0) {
-                rawArcAllocator.runDailyCycle(window.marketDataCache);
-            } else {
-                alert("Market data not ready. Please wait for dashboard to load, then try again.");
-            }
-        });
-    }
+    document.getElementById('runAllocatorBtn').addEventListener('click', () => {
+        if (!window.marketDataCache) {
+            alert("Market data not ready yet. Please wait...");
+            return;
+        }
+        rawArcAllocator.runDailyCycle(window.marketDataCache);
+    });
+
+    document.getElementById('confirmChangesBtn').addEventListener('click', () => {
+        rawArcAllocator.commitChanges();
+    });
 });
 
 class DataManager {
