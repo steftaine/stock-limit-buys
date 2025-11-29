@@ -2879,6 +2879,52 @@ const updateStock = async (symbol, range = '1mo', interval = '1d') => {
                 elements.buyQualityValue.textContent = buyStatus;
                 elements.buyQualityStatus.textContent = buyDesc;
 
+                // --- NEXT BUY RECOMMENDATION ---
+                // Calculate suggested buy price based on support levels and quality score
+                let nextBuyPrice = 0;
+                let buyGapPct = 0;
+                let suggestedAllocation = 0;
+
+                // Logic: For a "good deal", we want to be near support or -5% to -15% from current
+                const currentPrice = close;
+
+                // Find the nearest support level below current price
+                // (Assuming we have support/resistance data from earlier)
+                // If we don't, calculate based on 200MA and RSI
+
+                const ma200Value = ma200.pop();
+
+                // Determine next buy level based on quality score
+                if (buyQualityScore >= 8) {
+                    // Exceptional deal - buy at market or very close
+                    nextBuyPrice = currentPrice * 0.98; // Within 2%
+                    suggestedAllocation = 5; // 5% allocation for exceptional deals
+                } else if (buyQualityScore >= 5) {
+                    // Good deal - wait for 5% pullback
+                    nextBuyPrice = currentPrice * 0.95;
+                    suggestedAllocation = 3; // 3% allocation
+                } else if (buyQualityScore >= 2) {
+                    // OK deal - wait for 10% pullback
+                    nextBuyPrice = currentPrice * 0.90;
+                    suggestedAllocation = 2; // 2% allocation
+                } else {
+                    // Poor timing - wait for significant pullback near 200MA
+                    nextBuyPrice = Math.min(currentPrice * 0.85, ma200Value);
+                    suggestedAllocation = 1; // 1% allocation only
+                }
+
+                buyGapPct = ((currentPrice - nextBuyPrice) / currentPrice) * 100;
+
+                // Update UI
+                const nextBuyEl = document.getElementById('nextBuyPrice');
+                const buyGapEl = document.getElementById('buyGap');
+                const buyAllocationEl = document.getElementById('buyAllocation');
+
+                if (nextBuyEl) nextBuyEl.textContent = `$${nextBuyPrice.toFixed(2)}`;
+                if (buyGapEl) buyGapEl.textContent = `-${buyGapPct.toFixed(1)}%`;
+                if (buyAllocationEl) buyAllocationEl.textContent = `${suggestedAllocation}%`;
+
+
                 // Re-calculate Market Phase with actual buyQualityScore
                 const finalMarketPhase = detectMarketPhase(longTermQuotes, rsi, extension, topSignalScore, buyQualityScore, volumes);
                 elements.topSignalStatus.textContent = finalMarketPhase;
