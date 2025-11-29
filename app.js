@@ -1529,12 +1529,26 @@ class RawArcAllocator {
         const outputEl = document.getElementById('allocatorOutput');
         if (outputEl) outputEl.textContent = report;
 
-        // Enable Confirm Button
+        // Enable Confirm Button ONLY if there are changes
         const confirmBtn = document.getElementById('confirmChangesBtn');
         if (confirmBtn) {
-            confirmBtn.style.background = 'var(--accent)';
-            confirmBtn.style.cursor = 'pointer';
-            confirmBtn.disabled = false;
+            let hasChanges = false;
+            Object.values(plan.assetPlans).forEach(p => {
+                if (p.coreBuy) hasChanges = true;
+                p.ladderActions.forEach(a => {
+                    if (a.includes('Cancel') || a.includes('New')) hasChanges = true;
+                });
+            });
+
+            if (hasChanges) {
+                confirmBtn.style.background = 'var(--accent)';
+                confirmBtn.style.cursor = 'pointer';
+                confirmBtn.disabled = false;
+            } else {
+                confirmBtn.style.background = '#333';
+                confirmBtn.style.cursor = 'not-allowed';
+                confirmBtn.disabled = true;
+            }
         }
     }
 
