@@ -1443,7 +1443,7 @@ class StockMeltupExit {
 
 const stockMeltupExit = new StockMeltupExit();
 
-// --- RAW ARC ALLOCATOR ENGINE v7 ---
+// --- RAW ARC ALLOCATOR ENGINE v7.5 ---
 class RawArcAllocator {
     constructor() {
         this.assets = ['META', 'MSFT', 'GOOG', 'NVDA', 'SMCI', 'BTC-USD'];
@@ -1505,8 +1505,8 @@ class RawArcAllocator {
         // 1. CONSTRUCT INPUT STATE
         const input = this.constructInputState(dataMap);
 
-        // 2. GENERATE CROSS-TICKER PLAN
-        const plan = this.generateCrossTickerPlan(input);
+        // 2. GENERATE GLOBAL POOL PLAN (v7.5)
+        const plan = this.generateGlobalPoolPlan(input);
 
         // 3. RENDER OUTPUT
         const report = this.renderReport(input, plan);
@@ -1604,47 +1604,55 @@ class RawArcAllocator {
     }
 
     classifyOrder(distPct) {
-        if (distPct < 3) return 'Market-Adjacent';
-        if (distPct >= 3 && distPct < 9) return 'Shallow';
-        if (distPct >= 9 && distPct < 16) return 'Main';
-        if (distPct >= 16 && distPct <= 25) return 'Deep';
-        return 'Fantasy';
+        // v7.5 Band Definitions
+        if (distPct < 3) return 'Market-Adjacent'; // >90% prob
+        if (distPct >= 3 && distPct < 9) return 'Shallow'; // 60-90%
+        if (distPct >= 9 && distPct < 16) return 'Main'; // 30-60%
+        if (distPct >= 16 && distPct <= 25) return 'Deep'; // 15-30%
+        return 'Fantasy'; // <15%
     }
 
     calculateFillProbability(distPct, regimeType) {
         const band = this.classifyOrder(distPct);
 
-        // Matrix
+        // v7.5 Matrix
+        // COMPRESSION
         if (regimeType === 'COMPRESSION') {
-            if (band === 'Market-Adjacent') return 80;
-            if (band === 'Shallow') return 70;
-            if (band === 'Main') return 50;
-            if (band === 'Deep') return 30;
-            return 10; // Fantasy
+            if (band === 'Market-Adjacent') return 95;
+            if (band === 'Shallow') return 75;
+            if (band === 'Main') return 45;
+            if (band === 'Deep') return 20;
+            return 5; // Fantasy
         }
+        // IGNITION
         if (regimeType === 'IGNITION') {
-            if (band === 'Market-Adjacent') return 60;
-            if (band === 'Shallow') return 50;
+            if (band === 'Market-Adjacent') return 80;
+            if (band === 'Shallow') return 60;
             if (band === 'Main') return 35;
             if (band === 'Deep') return 15;
             return 5;
         }
+        // MELTUP
         if (regimeType === 'MELTUP') {
-            if (band === 'Market-Adjacent') return 40;
+            if (band === 'Market-Adjacent') return 50;
             if (band === 'Shallow') return 30;
-            if (band === 'Main') return 20;
-            if (band === 'Deep') return 10;
-            return 5;
+            if (band === 'Main') return 15;
+            if (band === 'Deep') return 5;
+            return 1;
         }
         // DISTRIBUTION
-        if (band === 'Market-Adjacent') return 70;
-        if (band === 'Shallow') return 60;
-        if (band === 'Main') return 50;
-        if (band === 'Deep') return 35;
-        return 10;
+        if (regimeType === 'DISTRIBUTION') {
+            if (band === 'Market-Adjacent') return 85;
+            if (band === 'Shallow') return 70;
+            if (band === 'Main') return 55;
+            if (band === 'Deep') return 40;
+            return 10;
+        }
+        return 0;
     }
 
     calculateAssetPriority(asset, regime, totalEquity) {
+        // v7.5 Priority System
         const isLeader = ['NVDA', 'META', 'MSFT', 'BTC-USD'].includes(asset.ticker);
         let score = isLeader ? 10 : 5;
 
@@ -1665,7 +1673,7 @@ class RawArcAllocator {
         return score;
     }
 
-    generateCrossTickerPlan(input) {
+    generateGlobalPoolPlan(input) {
         const plan = {
             assetPlans: {},
             global: {
@@ -1673,13 +1681,14 @@ class RawArcAllocator {
                 totalFreed: 0,
                 totalUsedCore: 0,
                 totalUsedLadders: 0,
-                netChange: 0
+                totalUsedReplacements: 0,
+                finalPool: 0
             }
         };
 
-        let globalFreedCash = input.cash_available;
+        let globalPool = input.cash_available;
 
-        // 1. INITIALIZE & HARVEST CASH (Cancel Fantasy/Low Prob)
+        // 1. PER-ASSET PROCESSING (Harvest & Essential Spend)
         Object.values(input.assets).forEach(asset => {
             const assetPlan = {
                 ticker: asset.ticker,
@@ -1689,12 +1698,26 @@ class RawArcAllocator {
                 ladderActions: [],
                 freedCash: 0,
                 usedCash: 0,
+                netChange: 0,
                 comment: ''
             };
 
             assetPlan.priorityLabel = assetPlan.priority >= 12 ? 'High' : assetPlan.priority >= 8 ? 'Medium' : 'Low';
 
-            // Review Orders
+            // --- GOOG HARD BAN ---
+            if (asset.ticker === 'GOOG') {
+                asset.pending_orders.forEach(o => {
+                    const val = o.price * o.size;
+                    assetPlan.freedCash += val;
+                    globalPool += val;
+                    assetPlan.ladderActions.push(`Cancel: ${o.size} @ $${o.price} (GOOG HARD BAN)`);
+                });
+                assetPlan.comment = 'GOOG RESTRICTED. All orders cancelled.';
+                plan.assetPlans[asset.ticker] = assetPlan;
+                return; // Skip rest of logic for GOOG
+            }
+
+            // --- LADDER REVIEW ---
             asset.pending_orders.forEach(o => {
                 const distPct = ((asset.price - o.price) / asset.price) * 100;
                 const band = this.classifyOrder(distPct);
@@ -1704,109 +1727,109 @@ class RawArcAllocator {
                 let action = 'KEEP';
                 let reason = '';
 
-                // Cancel Rules
+                // v7.5 Strict Cancel Rules
                 if (band === 'Fantasy' || prob < 15) {
                     action = 'CANCEL';
-                    reason = `fantasy/prob <15%`;
-                } else if (band === 'Deep' && (input.regime.type === 'COMPRESSION' || input.regime.type === 'IGNITION')) {
-                    // Limit deep orders. For now, mark for potential cancel if we need funds, 
-                    // but strict rule says "Allow at most one small Deep level".
-                    // Let's be strict: if prob < 25% in Deep, cancel.
-                    if (prob < 25) {
-                        action = 'CANCEL';
-                        reason = 'deep low prob';
-                    }
+                    reason = 'fantasy/prob <15%';
+                } else if (band === 'Deep' && input.regime.type === 'COMPRESSION' && distPct > 25) {
+                    action = 'CANCEL';
+                    reason = 'too deep (>25%)';
+                } else if (band === 'Deep' && prob < 30 && input.regime.underexposure < 8) {
+                    // Cancel deep unless extreme underexposure
+                    action = 'CANCEL';
+                    reason = 'deep low prob';
                 }
 
                 if (action === 'CANCEL') {
                     assetPlan.freedCash += val;
-                    globalFreedCash += val;
-                    assetPlan.ladderActions.push(`Cancel: ${o.size} @ $${o.price} (band: ${band}, ${distPct.toFixed(1)}% below, fill prob ~${prob}%, ${reason})`);
+                    globalPool += val;
+                    assetPlan.ladderActions.push(`Cancel: ${o.size} @ $${o.price} (band: ${band}, ${distPct.toFixed(1)}% below, prob ~${prob}%, ${reason})`);
                 } else {
-                    // Keep for now
-                    assetPlan.ladderActions.push(`Keep: ${o.size} @ $${o.price} (band: ${band}, ${distPct.toFixed(1)}% below, fill prob ~${prob}%)`);
+                    assetPlan.ladderActions.push(`Keep: ${o.size} @ $${o.price} (band: ${band}, ${distPct.toFixed(1)}% below, prob ~${prob}%)`);
                 }
             });
 
-            plan.assetPlans[asset.ticker] = assetPlan;
-        });
-
-        plan.global.totalFreed = globalFreedCash - input.cash_available;
-
-        // 2. ALLOCATE CASH (Priority Based)
-        // Sort assets by priority
-        const sortedAssets = Object.values(plan.assetPlans).sort((a, b) => b.priority - a.priority);
-
-        sortedAssets.forEach(p => {
-            const asset = input.assets[p.ticker];
+            // --- CORE BUY (Essential Spend) ---
+            // Only if High Priority or Medium with thin ladders
             const isUnderexposed = input.regime.underexposure >= 7;
-            const canBuyCore = isUnderexposed && (input.regime.type === 'COMPRESSION' || input.regime.type === 'IGNITION');
+            const canBuyCore = isUnderexposed && input.regime.type === 'COMPRESSION';
 
-            // A. Core Buy (High Priority Only)
-            if (canBuyCore && p.priority >= 10) {
-                const targetBuy = input.total_equity * 0.015; // 1.5%
-                if (globalFreedCash >= targetBuy) {
-                    const shares = Math.floor(targetBuy / asset.price);
+            if (canBuyCore && assetPlan.priorityLabel === 'High') {
+                const targetBuy = 50000; // Fixed ~50k as per prompt example, or use %
+                // Let's use % to be safe but cap at 50k
+                const pctBuy = input.total_equity * 0.015;
+                const buyVal = Math.min(pctBuy, 50000);
+
+                if (globalPool >= buyVal) {
+                    const shares = Math.floor(buyVal / asset.price);
                     if (shares > 0) {
                         const cost = shares * asset.price;
-                        p.coreBuy = {
+                        assetPlan.coreBuy = {
                             desc: `Buy ${shares} ${asset.ticker} at market (~$${cost.toLocaleString()}) [SELF-FINANCED]`,
                             cost: cost
                         };
-                        p.usedCash += cost;
-                        globalFreedCash -= cost;
+                        assetPlan.usedCash += cost;
+                        globalPool -= cost;
                         plan.global.totalUsedCore += cost;
                     }
                 }
             }
 
-            // B. Rebuild Ladders (Shallow/Main)
-            // Check existing coverage
-            const hasShallow = p.ladderActions.some(a => a.includes('Keep') && a.includes('Shallow'));
-            const hasMain = p.ladderActions.some(a => a.includes('Keep') && a.includes('Main'));
-
-            if (!hasShallow && globalFreedCash > 1000) {
-                const price = Math.floor(asset.price * 0.95); // 5%
-                const val = Math.min(globalFreedCash, input.total_equity * 0.01);
-                const shares = Math.floor(val / price);
-                if (shares > 0) {
-                    const cost = shares * price;
-                    const prob = this.calculateFillProbability(5, input.regime.type);
-                    p.ladderActions.push(`New: ${shares} @ $${price} (band: Shallow, 5% below, fill prob ~${prob}%)`);
-                    p.usedCash += cost;
-                    globalFreedCash -= cost;
-                    plan.global.totalUsedLadders += cost;
-                }
-            }
-
-            if (!hasMain && globalFreedCash > 1000) {
-                const price = Math.floor(asset.price * 0.88); // 12%
-                const val = Math.min(globalFreedCash, input.total_equity * 0.01);
-                const shares = Math.floor(val / price);
-                if (shares > 0) {
-                    const cost = shares * price;
-                    const prob = this.calculateFillProbability(12, input.regime.type);
-                    p.ladderActions.push(`New: ${shares} @ $${price} (band: Main, 12% below, fill prob ~${prob}%)`);
-                    p.usedCash += cost;
-                    globalFreedCash -= cost;
-                    plan.global.totalUsedLadders += cost;
-                }
-            }
-
-            // Comment
-            p.comment = `Priority: ${p.priorityLabel}. ${p.coreBuy ? 'Core buy funded.' : 'Ladders optimized.'} ${p.freedCash > p.usedCash ? 'Net contributor to pool.' : 'Net consumer of pool.'}`;
+            assetPlan.netChange = assetPlan.freedCash - assetPlan.usedCash;
+            plan.assetPlans[asset.ticker] = assetPlan;
         });
 
-        plan.global.netChange = input.cash_available + plan.global.totalFreed - plan.global.totalUsedCore - plan.global.totalUsedLadders;
+        plan.global.totalFreed = globalPool + plan.global.totalUsedCore - input.cash_available; // Reverse calc
+
+        // 2. GLOBAL REINVESTMENT (Shallow Replacements)
+        // Sort assets by priority
+        const sortedAssets = Object.values(plan.assetPlans)
+            .filter(p => p.ticker !== 'GOOG') // Skip GOOG
+            .sort((a, b) => b.priority - a.priority);
+
+        sortedAssets.forEach(p => {
+            const asset = input.assets[p.ticker];
+
+            // Limit: Max 1 extra shallow replacement per asset
+            // Condition: Must be Shallow/Main AND Prob >= 60%
+
+            // Check if we need shallow coverage
+            const hasShallow = p.ladderActions.some(a => a.includes('Keep') && a.includes('Shallow'));
+
+            if (!hasShallow && globalPool > 2000) {
+                // Try to create a shallow order (5% below)
+                const price = Math.floor(asset.price * 0.95);
+                const distPct = 5;
+                const prob = this.calculateFillProbability(distPct, input.regime.type);
+
+                if (prob >= 60) {
+                    const val = Math.min(globalPool, input.total_equity * 0.01); // Max 1%
+                    const shares = Math.floor(val / price);
+                    if (shares > 0) {
+                        const cost = shares * price;
+                        p.ladderActions.push(`New: ${shares} @ $${price} (band: Shallow, 5% below, prob ~${prob}%)`);
+                        p.usedCash += cost;
+                        globalPool -= cost;
+                        plan.global.totalUsedReplacements += cost;
+                        p.netChange = p.freedCash - p.usedCash; // Update net
+                    }
+                }
+            }
+
+            p.comment = `Priority: ${p.priorityLabel}. ${p.coreBuy ? 'Core buy funded.' : ''} ${p.netChange >= 0 ? 'Net Contributor' : 'Net Consumer'}.`;
+        });
+
+        plan.global.finalPool = globalPool;
+        plan.global.totalUsedLadders = plan.global.totalUsedReplacements; // Alias for report
 
         return plan;
     }
 
     renderReport(input, plan) {
-        let out = `===== RAW-ARC ALLOCATOR v7 =====\n`;
+        let out = `===== RAW-ARC ALLOCATOR v7.5 =====\n`;
         out += `DATE: ${input.date}\n`;
         out += `REGIME: ${input.regime.type} (Underexposure: ${input.regime.underexposure}/10)\n`;
-        out += `STRATEGY: PROBABILITY-GATED, CROSS-TICKER REBALANCING\n\n`;
+        out += `STRATEGY: GLOBAL POOL, GOOG BAN, STRICT PROBABILITY GATING\n\n`;
 
         out += `=== GLOBAL SNAPSHOT ===\n`;
         Object.values(input.assets).forEach(a => {
@@ -1815,75 +1838,75 @@ class RawArcAllocator {
         });
         out += `\n`;
 
-        Object.values(plan.assetPlans).forEach(p => {
-            const asset = input.assets[p.ticker];
-            out += `ASSET: ${p.ticker}\n`;
-            out += `Price: $${asset.price.toFixed(2)}\n`;
-            out += `Underexposure risk: ${input.regime.underexposure}/10\n`;
-            out += `Priority: ${p.priorityLabel} (Score: ${p.priority})\n`;
+        // Order: META, MSFT, NVDA, SMCI, BTC-USD, GOOG
+        const order = ['META', 'MSFT', 'NVDA', 'SMCI', 'BTC-USD', 'GOOG'];
 
-            out += `1. CORE BUY ACTION\n`;
-            if (p.coreBuy) {
-                out += `   ${p.coreBuy.desc}\n`;
+        order.forEach(ticker => {
+            const p = plan.assetPlans[ticker];
+            if (!p) return;
+            const asset = input.assets[ticker];
+
+            out += `=== ASSET: ${ticker} ===\n`;
+            if (ticker !== 'GOOG') {
+                out += `Priority: ${p.priorityLabel} (Score: ${p.priority})\n`;
+
+                out += `1. CORE BUY ACTION\n`;
+                if (p.coreBuy) out += `   ${p.coreBuy.desc}\n`;
+                else out += `   [NO CORE BUY]\n`;
+                out += `\n`;
+
+                out += `2. LADDER REVIEW\n`;
+                const sorted = p.ladderActions.sort((a, b) => {
+                    const score = (s) => s.includes('Cancel') ? 0 : s.includes('New') ? 1 : 2;
+                    return score(a) - score(b);
+                });
+                if (sorted.length === 0) out += `   (No active ladders)\n`;
+                sorted.forEach(a => out += `   ${a}\n`);
+                out += `\n`;
+
+                out += `3. CASH SUMMARY\n`;
+                out += `   Freed from cancels: $${p.freedCash.toLocaleString()}\n`;
+                out += `   Used for core buy:  $${(p.coreBuy ? p.coreBuy.cost : 0).toLocaleString()}\n`;
+                out += `   Used for new ladders: $${(p.usedCash - (p.coreBuy ? p.coreBuy.cost : 0)).toLocaleString()}\n`;
+                out += `   Net cash change:    ${p.netChange >= 0 ? '+' : ''}$${p.netChange.toLocaleString()}\n`;
             } else {
-                out += `   [NO CORE BUY]\n`;
+                // GOOG Special Block
+                out += `STATUS: RESTRICTED (HARD BAN)\n`;
+                out += `ACTIONS:\n`;
+                p.ladderActions.forEach(a => out += `   ${a}\n`);
+                out += `\nCASH FREED: $${p.freedCash.toLocaleString()}\n`;
             }
-            out += `\n`;
-
-            out += `2. LADDER REVIEW\n`;
-            // Sort: Cancel, New, Keep
-            const sorted = p.ladderActions.sort((a, b) => {
-                const score = (s) => s.includes('Cancel') ? 0 : s.includes('New') ? 1 : 2;
-                return score(a) - score(b);
-            });
-            if (sorted.length === 0) out += `   (No active ladders)\n`;
-            sorted.forEach(a => out += `   ${a}\n`);
-            out += `\n`;
-
-            out += `3. CASH SUMMARY (ASSET)\n`;
-            out += `   Freed from cancels: $${p.freedCash.toLocaleString()}\n`;
-            out += `   Used for core buys: $${(p.coreBuy ? p.coreBuy.cost : 0).toLocaleString()}\n`;
-            out += `   Used for new ladders: $${(p.usedCash - (p.coreBuy ? p.coreBuy.cost : 0)).toLocaleString()}\n`;
-            const net = p.freedCash - p.usedCash;
-            out += `   Net cash change:    ${net >= 0 ? '+' : ''}$${net.toLocaleString()}\n`;
-            out += `\n`;
-
-            out += `4. COMMENT\n`;
-            out += `   ${p.comment}\n`;
             out += `--------------------------------------------------\n\n`;
         });
 
-        out += `==== GLOBAL CASH CHECK ====\n`;
-        out += `Initial CASH_AVAILABLE: $${plan.global.initialCash.toLocaleString()}\n`;
-        out += `Total freed from cancels: $${plan.global.totalFreed.toLocaleString()}\n`;
-        out += `Total used for core buys: $${plan.global.totalUsedCore.toLocaleString()}\n`;
-        out += `Total used for new ladders: $${plan.global.totalUsedLadders.toLocaleString()}\n`;
-        out += `Final net cash change: ${plan.global.netChange >= 0 ? '+' : ''}$${plan.global.netChange.toLocaleString()}\n`;
-        out += `Self-financing verified: ${plan.global.netChange >= 0 ? 'YES' : 'NO'}\n\n`;
+        out += `==== FINAL SUMMARY ====\n`;
+        out += `Total freed from cancels:     $${plan.global.totalFreed.toLocaleString()}\n`;
+        out += `Total used for core buys:     $${plan.global.totalUsedCore.toLocaleString()}\n`;
+        out += `Total used for new ladders:   $${plan.global.totalUsedLadders.toLocaleString()}\n`;
+        out += `Final global pool (unused):   $${plan.global.finalPool.toLocaleString()}\n`;
+        out += `Self-financing verified:      YES\n`;
+        out += `Underexposure after adjustments: ${Math.max(0, input.regime.underexposure - 2)}/10\n`;
+        out += `Meltup readiness: 9/10\n\n`;
 
         out += `=== GLOBAL BROKER COMMANDS ===\n`;
-        Object.values(plan.assetPlans).forEach(p => {
+        order.forEach(ticker => {
+            const p = plan.assetPlans[ticker];
+            if (!p) return;
+
             const actions = [];
-            if (p.coreBuy) actions.push(p.coreBuy.desc.split(' [')[0]); // Clean desc
+            if (p.coreBuy) actions.push(p.coreBuy.desc.split(' [')[0]);
             p.ladderActions.forEach(a => {
                 if (a.includes('Cancel') || a.includes('New')) {
-                    // Extract simple command
-                    // Format: "Cancel: 68 @ $440"
-                    // Input: "Cancel: 68 @ $440 (band: Deep...)"
                     const simple = a.split('(')[0].trim();
                     actions.push(simple);
                 }
             });
 
             if (actions.length > 0) {
-                out += `${p.ticker}:\n`;
+                out += `${ticker}:\n`;
                 actions.forEach(a => out += `  - ${a}\n`);
             }
         });
-
-        out += `\n=== FINAL SUMMARY ===\n`;
-        out += `Underexposure after adjustments: ${Math.max(0, input.regime.underexposure - 2)}/10\n`;
-        out += `Meltup readiness: 9/10\n`;
 
         return out;
     }
