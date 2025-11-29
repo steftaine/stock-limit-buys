@@ -2886,31 +2886,31 @@ const updateStock = async (symbol, range = '1mo', interval = '1d') => {
                 let suggestedAllocation = 0;
 
                 // Logic: For a "good deal", we want to be near support or -5% to -15% from current
-                const currentPrice = close;
+                const buyPrice = close;
 
                 // Get 200MA value without mutating the array
-                const ma200Value = ma200 && ma200.length > 0 ? ma200[ma200.length - 1] : currentPrice * 0.85;
+                const ma200Value = ma200 && ma200.length > 0 ? ma200[ma200.length - 1] : buyPrice * 0.85;
 
                 // Determine next buy level based on quality score
                 if (buyQualityScore >= 8) {
                     // Exceptional deal - buy at market or very close
-                    nextBuyPrice = currentPrice * 0.98; // Within 2%
+                    nextBuyPrice = buyPrice * 0.98; // Within 2%
                     suggestedAllocation = 5; // 5% allocation for exceptional deals
                 } else if (buyQualityScore >= 5) {
                     // Good deal - wait for 5% pullback
-                    nextBuyPrice = currentPrice * 0.95;
+                    nextBuyPrice = buyPrice * 0.95;
                     suggestedAllocation = 3; // 3% allocation
                 } else if (buyQualityScore >= 2) {
                     // OK deal - wait for 10% pullback
-                    nextBuyPrice = currentPrice * 0.90;
+                    nextBuyPrice = buyPrice * 0.90;
                     suggestedAllocation = 2; // 2% allocation
                 } else {
                     // Poor timing - wait for significant pullback near 200MA
-                    nextBuyPrice = Math.min(currentPrice * 0.85, ma200Value);
+                    nextBuyPrice = Math.min(buyPrice * 0.85, ma200Value);
                     suggestedAllocation = 1; // 1% allocation only
                 }
 
-                buyGapPct = ((currentPrice - nextBuyPrice) / currentPrice) * 100;
+                buyGapPct = ((buyPrice - nextBuyPrice) / buyPrice) * 100;
 
                 // Update UI
                 const nextBuyEl = document.getElementById('nextBuyPrice');
