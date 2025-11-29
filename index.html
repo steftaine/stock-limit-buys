@@ -213,6 +213,25 @@
                         <button id="runAllocatorBtn" class="action-btn" style="margin-left: auto;">RUN DAILY
                             CYCLE</button>
                     </div>
+
+                    <!-- PORTFOLIO INPUT -->
+                    <details style="margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px;">
+                        <summary style="cursor: pointer; color: #888; margin-bottom: 10px; font-size: 0.9em;">Input
+                            Portfolio State (JSON)</summary>
+                        <textarea id="portfolioInput"
+                            style="width: 100%; height: 150px; background: #111; color: #ccc; border: 1px solid #333; padding: 10px; font-family: monospace; font-size: 12px;"
+                            placeholder='{
+  "cash": 0,
+  "holdings": { 
+    "META": 261772, 
+    "MSFT": 374419 
+  },
+  "limits": { 
+    "META": [{ "price": 440, "size": 68 }],
+    "MSFT": []
+  }
+}'></textarea>
+                    </details>
                     <div id="allocatorOutput" class="allocator-output" style="
                         background: #000; 
                         color: #0f0; 

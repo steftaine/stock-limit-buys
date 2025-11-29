@@ -1502,6 +1502,19 @@ class RawArcAllocator {
     }
 
     runDailyCycle(dataMap) {
+        // 0. GET USER STATE FROM UI (if available)
+        const customState = this.getUserState();
+        if (customState) {
+            console.log("Using custom portfolio state from UI");
+            this.cashAvailable = customState.cash !== undefined ? customState.cash : 0;
+            this.userState = {
+                holdings: customState.holdings || {},
+                limits: customState.limits || {}
+            };
+        } else {
+            console.log("Using default hardcoded portfolio state");
+        }
+
         // 1. CONSTRUCT INPUT STATE
         const input = this.constructInputState(dataMap);
 
@@ -1514,6 +1527,21 @@ class RawArcAllocator {
         // Display
         const outputEl = document.getElementById('allocatorOutput');
         if (outputEl) outputEl.textContent = report;
+    }
+
+    getUserState() {
+        const inputEl = document.getElementById('portfolioInput');
+        if (inputEl && inputEl.value.trim()) {
+            try {
+                const parsed = JSON.parse(inputEl.value);
+                return parsed;
+            } catch (e) {
+                console.error("Invalid JSON in portfolio input", e);
+                alert("Invalid JSON in portfolio input. Using default state. Check console for details.");
+                return null;
+            }
+        }
+        return null;
     }
 
     constructInputState(dataMap) {
