@@ -3931,6 +3931,12 @@ const initSimulationControls = () => {
                     return;
                 }
 
+                if (typeof BacktestEngine === 'undefined') {
+                    console.error("BacktestEngine not loaded");
+                    alert("Backtest Engine not loaded. Please use debug.html for backtesting.");
+                    return;
+                }
+
                 const engine = new BacktestEngine(rawArcAllocator);
 
                 // Run Backtest
