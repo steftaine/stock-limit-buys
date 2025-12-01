@@ -2687,11 +2687,14 @@ class AntigravityAllocatorV92 {
                 drawdown60d = this.calculateDrawdown(closes, price);
             }
 
+            const rawHolding = this.userState.holdings[ticker];
+            const shares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
+
             input.assets[ticker] = {
                 ticker,
                 price,
-                position_shares: this.userState.holdings[ticker] || 0,
-                position_value: (this.userState.holdings[ticker] || 0) * price,
+                position_shares: shares,
+                position_value: shares * price,
                 pending_orders: this.userState.limits[ticker] || [],
                 indicators: {
                     rsi,
@@ -2767,7 +2770,9 @@ class AntigravityAllocatorV92 {
 
             // 1. Handle Trims/Exits (Immediate Execution)
             if (plan.action === 'EXIT' || (plan.coreTrim && plan.coreTrim.shares > 0)) {
-                const currentShares = state.holdings[ticker] || 0;
+                const rawHolding = state.holdings[ticker];
+                const currentShares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
+
                 let sharesToSell = 0;
 
                 if (plan.action === 'EXIT') {
@@ -2777,17 +2782,15 @@ class AntigravityAllocatorV92 {
                 }
 
                 if (sharesToSell > 0) {
-                    // Assume execution at current price (approximate)
-                    // In a real sim, we'd use the actual fill price
-                    // Here we use the price from the plan generation time
-                    // We need to fetch current price from cache or plan if available
-                    // The plan doesn't store current price explicitly in top level, but we can infer or get from marketData
-                    // For simplicity, we'll just log it and let user verify price, 
-                    // OR we can try to find price from the rung generation context if possible.
-                    // Better: The user should manually update cash for sells to be precise, 
-                    // but we can estimate.
-                    // Let's just update holdings for now.
-                    state.holdings[ticker] = Math.max(0, currentShares - sharesToSell);
+                    const newShares = Math.max(0, currentShares - sharesToSell);
+
+                    // Update state preserving structure
+                    if (typeof rawHolding === 'object' && rawHolding !== null) {
+                        state.holdings[ticker].shares = newShares;
+                    } else {
+                        state.holdings[ticker] = newShares;
+                    }
+
                     log.push(`SOLD ${sharesToSell} ${ticker} (Update Cash Manually)`);
                 }
             }
