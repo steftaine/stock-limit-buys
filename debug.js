@@ -2463,6 +2463,7 @@ class AntigravityAllocatorV92 {
 
             const assetPlan = {
                 ticker: asset.ticker,
+                price: asset.price, // Pass price for reporting
                 regime,
                 action: action.coreAction,
                 coreTrim: action.coreTrim,
