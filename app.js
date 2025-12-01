@@ -2742,7 +2742,94 @@ class AntigravityAllocatorV92 {
             alert("No plan to commit");
             return;
         }
-        alert("Changes committed (UI integration pending)");
+
+        const inputEl = document.getElementById('portfolioInput');
+        if (!inputEl) return;
+
+        let state;
+        try {
+            state = JSON.parse(inputEl.value);
+        } catch (e) {
+            alert("Invalid JSON in portfolio input");
+            return;
+        }
+
+        // Initialize if missing
+        if (!state.holdings) state.holdings = {};
+        if (!state.limits) state.limits = {};
+        if (state.cash === undefined) state.cash = 100000;
+
+        let log = [];
+
+        // Process Plan
+        Object.values(this.lastPlan.assetPlans).forEach(plan => {
+            const ticker = plan.ticker;
+
+            // 1. Handle Trims/Exits (Immediate Execution)
+            if (plan.action === 'EXIT' || (plan.coreTrim && plan.coreTrim.shares > 0)) {
+                const currentShares = state.holdings[ticker] || 0;
+                let sharesToSell = 0;
+
+                if (plan.action === 'EXIT') {
+                    sharesToSell = currentShares;
+                } else if (plan.coreTrim) {
+                    sharesToSell = plan.coreTrim.shares;
+                }
+
+                if (sharesToSell > 0) {
+                    // Assume execution at current price (approximate)
+                    // In a real sim, we'd use the actual fill price
+                    // Here we use the price from the plan generation time
+                    // We need to fetch current price from cache or plan if available
+                    // The plan doesn't store current price explicitly in top level, but we can infer or get from marketData
+                    // For simplicity, we'll just log it and let user verify price, 
+                    // OR we can try to find price from the rung generation context if possible.
+                    // Better: The user should manually update cash for sells to be precise, 
+                    // but we can estimate.
+                    // Let's just update holdings for now.
+                    state.holdings[ticker] = Math.max(0, currentShares - sharesToSell);
+                    log.push(`SOLD ${sharesToSell} ${ticker} (Update Cash Manually)`);
+                }
+            }
+
+            // 2. Handle Ladder (Limits)
+            if (!state.limits[ticker]) state.limits[ticker] = [];
+
+            // Remove CANCELs
+            const cancels = plan.ladder.filter(r => r.status === 'CANCEL');
+            cancels.forEach(c => {
+                const idx = state.limits[ticker].findIndex(l => Math.abs(l.price - c.price) < 0.01 && l.size === c.shares);
+                if (idx !== -1) {
+                    state.limits[ticker].splice(idx, 1);
+                    // Add cash back? 
+                    // state.cash += c.price * c.shares; 
+                    log.push(`CANCELLED ${ticker} ${c.shares} @ $${c.price}`);
+                }
+            });
+
+            // Add NEWs
+            const newRungs = plan.ladder.filter(r => r.status === 'NEW');
+            newRungs.forEach(r => {
+                state.limits[ticker].push({
+                    price: r.price,
+                    size: r.shares,
+                    note: r.reason
+                });
+                // Deduct cash?
+                // state.cash -= r.price * r.shares;
+                log.push(`ADDED ${ticker} ${r.shares} @ $${r.price}`);
+            });
+        });
+
+        // Update UI
+        inputEl.value = JSON.stringify(state, null, 4);
+
+        // Feedback
+        if (log.length > 0) {
+            alert(`Committed Changes:\n${log.join('\n')}\n\nJSON updated. Please review cash balance.`);
+        } else {
+            alert("No changes to commit.");
+        }
     }
 }
 
