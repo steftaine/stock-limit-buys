@@ -293,33 +293,7 @@
 
             </div>
 
-            <!-- BACKTEST ENGINE -->
-            <div class="ignition-status-card allocator-card" style="border: 2px solid red; margin-top: 0;">
-                <div class="ignition-header">
-                    <span class="pulse-dot" style="background-color: #7B61FF;"></span>
-                    <h3>RAW ARC BACKTEST ENGINE v1.1 (DEBUG)</h3>
-                </div>
-                <div style="margin-bottom: 15px; color: #8b9bb4; font-size: 13px;">
-                    Simulate Raw Arc v7.7 logic over historical data to validate buy, trim, and exit signals.
-                </div>
-                <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                    <select id="backtestScenario"
-                        style="flex: 1; background: #111; color: #ccc; border: 1px solid #333; padding: 8px; border-radius: 4px; font-size: 12px;">
-                        <option value="default">Default (1 Year)</option>
-                        <option value="btc_2016">BTC: 2016-2019 (Blowoff)</option>
-                        <option value="nvda_2019">NVDA: 2019-2024 (Covid/AI)</option>
-                        <option value="meta_2019">META: 2019-2024 (Crash/Rally)</option>
-                        <option value="smci_2022">SMCI: 2022-2024 (Vol)</option>
-                        <option value="MSFT_2022">MSFT: 2022 (Bear Market)</option>
 
-                        <option value="msft_base">MSFT: Baseline (5Y)</option>
-                    </select>
-                    <button id="runBacktestBtn" class="action-btn">RUN BACKTEST</button>
-                </div>
-                <div id="backtestResults"
-                    style="background: #000; color: #0f0; font-family: 'Courier New', monospace; padding: 15px; border-radius: 4px; white-space: pre-wrap; font-size: 12px; min-height: 150px; border: 1px solid #333; display: none; max-height: 400px; overflow-y: auto;">
-                </div>
-            </div>
 
             <div class="glass-panel table-container">
                 <table class="dashboard-table">
