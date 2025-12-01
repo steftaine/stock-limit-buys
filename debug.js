@@ -2687,11 +2687,16 @@ class AntigravityAllocatorV92 {
                 drawdown60d = this.calculateDrawdown(closes, price);
             }
 
+            const rawHolding = this.userState.holdings[ticker];
+            const shares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
+
+            console.log(`[Allocator] ${ticker}: RawHolding=`, rawHolding, `Shares=${shares}`);
+
             input.assets[ticker] = {
                 ticker,
                 price,
-                position_shares: this.userState.holdings[ticker] || 0,
-                position_value: (this.userState.holdings[ticker] || 0) * price,
+                position_shares: shares,
+                position_value: shares * price,
                 pending_orders: this.userState.limits[ticker] || [],
                 indicators: {
                     rsi,
@@ -2742,7 +2747,94 @@ class AntigravityAllocatorV92 {
             alert("No plan to commit");
             return;
         }
-        alert("Changes committed (UI integration pending)");
+
+        const inputEl = document.getElementById('portfolioInput');
+        if (!inputEl) return;
+
+        let state;
+        try {
+            state = JSON.parse(inputEl.value);
+        } catch (e) {
+            alert("Invalid JSON in portfolio input");
+            return;
+        }
+
+        // Initialize if missing
+        if (!state.holdings) state.holdings = {};
+        if (!state.limits) state.limits = {};
+        if (state.cash === undefined) state.cash = 100000;
+
+        let log = [];
+
+        // Process Plan
+        Object.values(this.lastPlan.assetPlans).forEach(plan => {
+            const ticker = plan.ticker;
+
+            // 1. Handle Trims/Exits (Immediate Execution)
+            if (plan.action === 'EXIT' || (plan.coreTrim && plan.coreTrim.shares > 0)) {
+                const rawHolding = state.holdings[ticker];
+                const currentShares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
+
+                let sharesToSell = 0;
+
+                if (plan.action === 'EXIT') {
+                    sharesToSell = currentShares;
+                } else if (plan.coreTrim) {
+                    sharesToSell = plan.coreTrim.shares;
+                }
+
+                if (sharesToSell > 0) {
+                    const newShares = Math.max(0, currentShares - sharesToSell);
+
+                    // Update state preserving structure
+                    if (typeof rawHolding === 'object' && rawHolding !== null) {
+                        state.holdings[ticker].shares = newShares;
+                    } else {
+                        state.holdings[ticker] = newShares;
+                    }
+
+                    log.push(`SOLD ${sharesToSell} ${ticker} (Update Cash Manually)`);
+                }
+            }
+
+            // 2. Handle Ladder (Limits)
+            if (!state.limits[ticker]) state.limits[ticker] = [];
+
+            // Remove CANCELs
+            const cancels = plan.ladder.filter(r => r.status === 'CANCEL');
+            cancels.forEach(c => {
+                const idx = state.limits[ticker].findIndex(l => Math.abs(l.price - c.price) < 0.01 && l.size === c.shares);
+                if (idx !== -1) {
+                    state.limits[ticker].splice(idx, 1);
+                    // Add cash back? 
+                    // state.cash += c.price * c.shares; 
+                    log.push(`CANCELLED ${ticker} ${c.shares} @ $${c.price}`);
+                }
+            });
+
+            // Add NEWs
+            const newRungs = plan.ladder.filter(r => r.status === 'NEW');
+            newRungs.forEach(r => {
+                state.limits[ticker].push({
+                    price: r.price,
+                    size: r.shares,
+                    note: r.reason
+                });
+                // Deduct cash?
+                // state.cash -= r.price * r.shares;
+                log.push(`ADDED ${ticker} ${r.shares} @ $${r.price}`);
+            });
+        });
+
+        // Update UI
+        inputEl.value = JSON.stringify(state, null, 4);
+
+        // Feedback
+        if (log.length > 0) {
+            alert(`Committed Changes:\n${log.join('\n')}\n\nJSON updated. Please review cash balance.`);
+        } else {
+            alert("No changes to commit.");
+        }
     }
 }
 
