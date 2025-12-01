@@ -2701,9 +2701,9 @@ class AntigravityAllocatorV92 {
 
             input.assets[ticker] = {
                 ticker,
-                price,
+                price: price || 0,
                 position_shares: shares,
-                position_value: shares * price,
+                position_value: shares * (price || 0),
                 pending_orders: this.userState.limits[ticker] || [],
                 indicators: {
                     rsi,
