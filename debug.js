@@ -2539,7 +2539,14 @@ class AntigravityAllocatorV92 {
                 const targetShares = p.coreTrim
                     ? p.position.shares - p.coreTrim.shares
                     : p.position.shares;
-                report += `${p.ticker}: ${p.position.shares} → ${targetShares} shares`;
+
+                const value = p.position.shares * p.price;
+                const valueStr = value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
+                report += `${p.ticker}: ${p.position.shares} shares (${valueStr})`;
+                if (targetShares !== p.position.shares) {
+                    report += ` → ${targetShares}`;
+                }
                 if (p.coreTrim) {
                     report += ` (Trim ${p.coreTrim.shares})`;
                 }
