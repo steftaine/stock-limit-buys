@@ -2690,6 +2690,8 @@ class AntigravityAllocatorV92 {
             const rawHolding = this.userState.holdings[ticker];
             const shares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
 
+            console.log(`[Allocator] ${ticker}: RawHolding=`, rawHolding, `Shares=${shares}`);
+
             input.assets[ticker] = {
                 ticker,
                 price,
