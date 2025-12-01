@@ -1466,6 +1466,9 @@ class AntigravityAllocatorV92 {
         this.cashAvailable = 0;
         this.BOOTSTRAP_LIMIT = 0.40; // 40% max initial deployment
         this.lastPlan = null;
+
+        // SMCI-specific tracking
+        this.smciBannedZones = []; // Array of {min, max, reason, addedAt}
     }
 
     // ============================================================
@@ -1478,7 +1481,9 @@ class AntigravityAllocatorV92 {
      */
     getAssetType(ticker) {
         const cryptoTickers = ['BTC-USD', 'ETH-USD', 'BTC', 'ETH'];
-        return cryptoTickers.includes(ticker) ? 'CRYPTO' : 'STOCK';
+        if (cryptoTickers.includes(ticker)) return 'CRYPTO';
+        if (ticker === 'SMCI') return 'SMCI';
+        return 'STOCK';
     }
 
 
@@ -1646,6 +1651,69 @@ class AntigravityAllocatorV92 {
             };
         }
 
+        // === SMCI-SPECIFIC PHASE DETECTION ===
+        if (assetType === 'SMCI') {
+            // Need priceChange24h for SMCI logic (calculate from historical data if available)
+            const priceChange24h = 0; // Placeholder - would need to calculate from data
+
+            // CATASTROPHIC: Fail fast (trigger on ANY condition)
+            const catastrophicCond1 = (priceTosma200Pct < -10 && rsi < 40 && volumeRatio >= 1.5);
+            const catastrophicCond2 = (priceChange24h < -15 && volumeRatio >= 2.0);
+
+            if (catastrophicCond1 || catastrophicCond2) {
+                return {
+                    phase: 'CATASTROPHIC',
+                    reason: `SMCI CATASTROPHIC: ${catastrophicCond1 ? 'Structure breakdown' : 'Violent selloff'}`,
+                    score: 0
+                };
+            }
+
+            // RESET: Blowoff/overstretched (ANY TWO of four triggers)
+            let resetSignals = 0;
+            const resetReasons = [];
+
+            if (rsi > 72) {
+                resetSignals++;
+                resetReasons.push(`RSI ${rsi.toFixed(0)}`);
+            }
+            if (priceToEma20Pct > 15) {
+                resetSignals++;
+                resetReasons.push(`+${priceToEma20Pct.toFixed(1)}% vs EMA20`);
+            }
+            if (priceChange24h > 12) {
+                resetSignals++;
+                resetReasons.push(`+${priceChange24h.toFixed(1)}% day`);
+            }
+            if (priceTosma200Pct > 20) {
+                resetSignals++;
+                resetReasons.push(`+${priceTosma200Pct.toFixed(1)}% vs SMA200`);
+            }
+
+            if (resetSignals >= 2) {
+                return {
+                    phase: 'RESET',
+                    reason: `SMCI RESET: ${resetReasons.join(', ')}`,
+                    score: 2
+                };
+            }
+
+            // NORMAL: Validate normal conditions
+            if (rsi >= 40 && rsi <= 70 && Math.abs(priceToEma20Pct) <= 15 && volumeRatio <= 1.5) {
+                return {
+                    phase: 'NORMAL',
+                    reason: `SMCI NORMAL: RSI ${rsi.toFixed(0)}, ${priceTosma200Pct >= 0 ? '+' : ''}${priceTosma200Pct.toFixed(1)}% vs SMA200`,
+                    score: 4
+                };
+            }
+
+            // Default to NORMAL (cautious)
+            return {
+                phase: 'NORMAL',
+                reason: `SMCI watching: RSI ${rsi.toFixed(0)}`,
+                score: 4
+            };
+        }
+
         // === STOCK PHASE DETECTION (Existing Logic) ===
 
         // PHASE 5: CATASTROPHIC (v9.3: price < SMA200*0.85 AND RSI < 32 AND volume < 40% AND global regime allows)
@@ -1738,6 +1806,82 @@ class AntigravityAllocatorV92 {
         }
         // 30% and 5% are always allowed
         return true;
+    }
+
+    // ============================================================
+    // SMCI-SPECIFIC HELPERS
+    // ============================================================
+
+    /**
+     * Validate SMCI rung against position sizing caps
+     */
+    validateSMCIRung(rungCost, totalSMCIExposure, totalSMCILadderCapital, totalPortfolioValue) {
+        // MAX_SMCI_EXPOSURE_PORTFOLIO = 5%
+        if ((totalSMCIExposure + rungCost) > totalPortfolioValue * 0.05) {
+            return { allowed: false, reason: 'SMCI cap hit – risk cage (5% exposure)' };
+        }
+
+        // MAX_SMCI_LADDERS_PORTFOLIO = 3%
+        if ((totalSMCILadderCapital + rungCost) > totalPortfolioValue * 0.03) {
+            return { allowed: false, reason: 'SMCI cap hit – risk cage (3% ladder)' };
+        }
+
+        // MAX_SMCI_RUNG_PORTFOLIO = 0.75%
+        if (rungCost > totalPortfolioValue * 0.0075) {
+            return { allowed: false, reason: 'SMCI cap hit – risk cage (0.75% per rung)' };
+        }
+
+        // MAX_RUNG_SHARE_OF_SMCI = 20%
+        const futureExposure = totalSMCIExposure + rungCost;
+        if (futureExposure > 0 && rungCost > futureExposure * 0.20) {
+            return { allowed: false, reason: 'SMCI cap hit – risk cage (20% of SMCI)' };
+        }
+
+        return { allowed: true };
+    }
+
+    /**
+     * Determine SMCI buy zone based on price distance from SMA200
+     */
+    getSMCIBuyZone(price, sma200) {
+        const pctVsSMA200 = ((price - sma200) / sma200) * 100;
+
+        if (pctVsSMA200 < -25) {
+            return { zone: 'REJECT_BROKEN', allowed: false, reason: 'SMCI broken below structure – no knife catching' };
+        }
+        if (pctVsSMA200 > 20) {
+            return { zone: 'REJECT_PARABOLIC', allowed: false, reason: 'SMCI parabolic – no chase' };
+        }
+        if (pctVsSMA200 >= -15 && pctVsSMA200 <= 5) {
+            return { zone: 'STRUCTURAL', allowed: true, maxRungPct: 0.0075 }; // 0.75%
+        }
+        if (pctVsSMA200 >= -25 && pctVsSMA200 < -15) {
+            return { zone: 'SNIPER', allowed: true, maxRungPct: 0.0025 }; // 0.25%
+        }
+
+        return { zone: 'NEUTRAL', allowed: false, reason: 'SMCI outside buy zones' };
+    }
+
+    /**
+     * Check if a price falls within any banned zone
+     */
+    isSMCIPriceBanned(price) {
+        return this.smciBannedZones.some(range =>
+            price >= range.min && price <= range.max
+        );
+    }
+
+    /**
+     * Add a price to the banned zones list
+     */
+    addSMCIBannedZone(price, reason) {
+        const range = {
+            min: price * 0.97,
+            max: price * 1.03,
+            reason: reason,
+            addedAt: new Date().toISOString()
+        };
+        this.smciBannedZones.push(range);
     }
 
     /**
@@ -1876,6 +2020,75 @@ class AntigravityAllocatorV92 {
         return newRungs;
     }
 
+    /**
+     * Generate SMCI-specific rungs based on structural and sniper zones
+     */
+    generateSMCIRungs(asset, dryPowder, totalPool) {
+        const { price, indicators } = asset;
+        const { sma200 } = indicators;
+
+        const rungs = [];
+        const zoneInfo = this.getSMCIBuyZone(price, sma200);
+
+        if (!zoneInfo.allowed) {
+            return rungs; // Rejected zone
+        }
+
+        // Calculate current SMCI exposure (position + pending)
+        const totalSMCIExposure = asset.position_value;
+        const totalSMCILadderCapital = asset.pending_orders.reduce((sum, o) => sum + (o.price * o.shares), 0);
+
+        // Generate rungs based on zone
+        if (zoneInfo.zone === 'STRUCTURAL') {
+            // Normal structural rungs at -5%, -10%, -15%
+            const rungPrices = [sma200 * 0.95, sma200 * 0.90, sma200 * 0.85];
+
+            for (const targetPrice of rungPrices) {
+                if (price <= targetPrice) continue; // Don't place above current price
+
+                const allocation = Math.min(dryPowder * 0.10, totalPool * zoneInfo.maxRungPct);
+                const shares = Math.floor(allocation / targetPrice);
+                const cost = shares * targetPrice;
+
+                // Validate caps
+                const validation = this.validateSMCIRung(cost, totalSMCIExposure, totalSMCILadderCapital, totalPool);
+                if (!validation.allowed) continue;
+
+                // Check banned zones
+                if (this.isSMCIPriceBanned(targetPrice)) continue;
+
+                rungs.push({
+                    price: targetPrice,
+                    shares,
+                    probability: 30,
+                    status: 'NEW',
+                    reason: `SMCI structural (${Math.round(((targetPrice / sma200) - 1) * 100)}% vs SMA200)`
+                });
+            }
+        } else if (zoneInfo.zone === 'SNIPER') {
+            // Sniper rung at -20%
+            const targetPrice = sma200 * 0.80;
+            if (price > targetPrice) {
+                const allocation = totalPool * 0.0025; // 0.25% max
+                const shares = Math.floor(allocation / targetPrice);
+                const cost = shares * targetPrice;
+
+                const validation = this.validateSMCIRung(cost, totalSMCIExposure, totalSMCILadderCapital, totalPool);
+                if (validation.allowed && !this.isSMCIPriceBanned(targetPrice)) {
+                    rungs.push({
+                        price: targetPrice,
+                        shares,
+                        probability: 10,
+                        status: 'NEW',
+                        reason: 'SNIPER – deep flush, optional'
+                    });
+                }
+            }
+        }
+
+        return rungs;
+    }
+
     // ============================================================
     // ACTION LOGIC PER PHASE
     // ============================================================
@@ -1954,6 +2167,69 @@ class AntigravityAllocatorV92 {
             }));
 
             return action;
+        }
+
+        // ===== SMCI PHASE (Strict Risk Cage) =====
+        if (assetType === 'SMCI') {
+            // CATASTROPHIC: Nuke 70% immediately
+            if (phase === 'CATASTROPHIC') {
+                action.coreTrim = {
+                    shares: Math.floor(position_shares * 0.70),
+                    reason: 'SMCI CATASTROPHIC – Fail fast 70% exit'
+                };
+
+                // Cancel ALL orders
+                action.modifiedRungs = pending_orders.map(o => ({
+                    ...o,
+                    status: 'CANCEL',
+                    reason: 'SMCI CATASTROPHIC - Clear all'
+                }));
+
+                // Optional sniper of last resort (if remaining exposure <= 2% of portfolio)
+                if (position_value * 0.30 <= totalPool * 0.02) {
+                    const sniperPrice = asset.indicators.sma200 * 0.78; // -22%
+                    const sniperAllocation = totalPool * 0.0025; // 0.25%
+                    const sniperShares = Math.floor(sniperAllocation / sniperPrice);
+
+                    if (sniperShares > 0) {
+                        action.newRungs.push({
+                            price: sniperPrice,
+                            shares: sniperShares,
+                            probability: 5,
+                            status: 'NEW',
+                            reason: 'SNIPER – post-flush probe'
+                        });
+                    }
+                }
+
+                return action;
+            }
+
+            // RESET: Trim 50% into strength
+            if (phase === 'RESET') {
+                action.coreTrim = {
+                    shares: Math.floor(position_shares * 0.50),
+                    reason: 'SMCI RESET – Derisk 50% into strength'
+                };
+
+                // Cancel buys ABOVE SMA200
+                const { sma200 } = asset.indicators;
+                action.modifiedRungs = pending_orders
+                    .filter(o => o.price > sma200)
+                    .map(o => ({
+                        ...o,
+                        status: 'CANCEL',
+                        reason: 'SMCI RESET - Cancel above SMA200'
+                    }));
+
+                return action;
+            }
+
+            // NORMAL: Generate rungs (with zone/cap validation)
+            if (phase === 'NORMAL') {
+                action.newRungs = this.generateSMCIRungs(asset, dryPowder, totalPool);
+                return action;
+            }
         }
 
         // ===== RESET PHASE =====
