@@ -2851,6 +2851,22 @@ const rawArcAllocator = new AntigravityAllocatorV92();
 
 // Initialize Button
 document.addEventListener('DOMContentLoaded', () => {
+    // Load saved portfolio state from localStorage
+    const portfolioInput = document.getElementById('portfolioInput');
+    if (portfolioInput) {
+        const savedState = localStorage.getItem('portfolioState');
+        if (savedState) {
+            portfolioInput.value = savedState;
+            console.log('[Storage] Loaded portfolio state from localStorage');
+        }
+
+        // Save to localStorage on change
+        portfolioInput.addEventListener('input', () => {
+            localStorage.setItem('portfolioState', portfolioInput.value);
+            console.log('[Storage] Saved portfolio state to localStorage');
+        });
+    }
+
     document.getElementById('runAllocatorBtn').addEventListener('click', () => {
         if (!window.marketDataCache) {
             alert("Market data not ready yet. Please wait...");
