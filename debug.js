@@ -1465,7 +1465,19 @@ class MacroRegime {
     }
 
     detectPhase(inputs) {
-        const { spx, nasdaq, vix, hySpread, payrolls, unemployment, ism, btc, gold } = inputs;
+        // Provide defaults if inputs is undefined (e.g., during backtest)
+        if (!inputs) {
+            inputs = {};
+        }
+        const spx = inputs.spx || { drawdown: 0 };
+        const nasdaq = inputs.nasdaq || { drawdown: 0 };
+        const vix = inputs.vix || 15;
+        const hySpread = inputs.hySpread || 300;
+        const payrolls = inputs.payrolls || 'flat';
+        const unemployment = inputs.unemployment || { rate: 4.0, change3m: 0 };
+        const ism = inputs.ism || 50;
+        const btc = inputs.btc || { drawdown: 0 };
+        const gold = inputs.gold || { vsHigh: 0 };
 
         // 1. STRUCTURAL RESET (Crash)
         // SPX -40%+, VIX > 50, HY Spread > 600bps (approx +250 from tights), Unemployment spiking
