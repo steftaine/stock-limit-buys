@@ -81,84 +81,91 @@ class BacktestEngine {
             let dailyEquity = cash;
             const currentPrices = {};
 
-            allTickers.forEach(t => {
+            tickers.forEach(t => {
                 if (!dataMap[t]) return; // Skip if data failed to load
                 const dayData = dataMap[t].find(d => d.date === date);
                 if (dayData) {
                     const price = dayData.close;
                     currentPrices[t] = price;
-                    const posVal = (positions[t] || 0) * price;
-                    if (positions[t]) dailyEquity += posVal; // Only add to equity if we hold it (or track SPY equity if we bought it)
+                    const posVal = positions[t] * price;
+                    dailyEquity += posVal;
 
                     // Add to input
                     // Note: Allocator expects 'pending_orders' with 'size'
                     // We need to map our openOrders format
-                    const pendingForAllocator = (openOrders[t] || []).map(o => ({
+                    const pendingForAllocator = openOrders[t].map(o => ({
                         ...o,
-                        size: o.qty
+                        size: o.qty,
+                        // Add dummy id if needed
+                        // Add dummy id if needed
                     }));
 
-                    // Calculate Support Levels & History
+                    // Calculate Support Levels
                     let supportLevels = [];
-                    let history = [];
                     try {
                         if (!dataMap[t]) throw new Error("Data missing");
-                        history = dataMap[t].filter(d => d.date <= date);
+                        const history = dataMap[t].filter(d => d.date <= date);
                         const prices = history.map(d => d.close);
                         const volumes = history.map(d => d.volume || 1000000);
                         supportLevels = detectSupportResistanceLevels(prices, volumes, price) || [];
                     } catch (e) {
-                        supportLevels = [];
+                        console.warn(`[Backtest] Could not calculate support levels for ${t}:`, e.message);
+                        supportLevels = []; // Fallback to empty array
                     }
 
-                    // Calculate Indicators for v9 Allocator
                     // Calculate Indicators for v9 Allocator
                     let rsi = 50;
-                    let sma200 = price;
-                    let ema20 = price;
-                    let volume = dayData.volume || 1000000;
-                    const volSurge = false;
+                    let sma200 = 0;
+                    let volSurge = false;
 
                     if (history.length > 200) {
-                        const closes = history.map(d => d.close);
-                        rsi = btCalculateRSI(closes); // Returns last value
-                        sma200 = btCalculateSMA(closes, 200);
-                        ema20 = btCalculateEMA(closes, 20);
+                        const price = dayData.close;
+                        const posVal = positions[t] * price;
+                        const pendingForAllocator = openOrders[t].map(o => ({ price: o.price, size: o.qty, band: o.band }));
+
+                        const rsi = dayData.rsi || 50;
+                        const sma200 = dayData.sma200 || price;
+                        const ema20 = dayData.ema20 || sma200;  // v9.3: Need EMA20
+                        const volSurge = false;
+
+                        // v9.3: Calculate 60-day drawdown
+                        const history = dataMap[t].filter(d => d.date <= date);
+                        const last60 = history.slice(-60);
+                        const high60d = last60.length > 0 ? Math.max(...last60.map(d => d.close)) : price;
+                        const drawdown60d = ((high60d - price) / high60d) * 100;
+
+                        // v9.3: Calculate volumeAvg20
+                        const last20Vols = history.slice(-20).map(d => d.volume || 1000000);
+                        const volumeAvg20 = last20Vols.length > 0 ?
+                            last20Vols.reduce((a, b) => a + b, 0) / last20Vols.length :
+                            1000000;
+                        const volume = dayData.volume || 1000000;
+
+                        currentPrices[t] = price;
+                        dailyEquity += posVal; // Add after price is defined
+
+                        dailyInput.assets[t] = {
+                            ticker: t,
+                            price,
+                            position_shares: positions[t],
+                            position_value: posVal,
+                            weight: 0,
+                            pending_orders: pendingForAllocator,
+                            pending_cost: openOrders[t].reduce((sum, o) => sum + (o.qty * o.price), 0),
+                            supportLevels: supportLevels, // Pass to allocator
+                            indicators: {
+                                rsi,
+                                sma200,
+                                ema20,  // v9.3: NEW
+                                volume,  // v9.3: NEW
+                                volumeAvg20,  // v9.3: NEW
+                                drawdown60d,  // v9.3: NEW
+                                priceToSMA200: sma200 > 0 ? (price / sma200) : 1,
+                                volSurge
+                            }
+                        };
                     }
-
-                    // v9.3: Calculate 60-day drawdown
-                    const last60 = history.slice(-60);
-                    const high60d = last60.length > 0 ? Math.max(...last60.map(d => d.close)) : price;
-                    const drawdown60d = ((high60d - price) / high60d) * 100;
-
-                    // v9.3: Calculate volumeAvg20
-                    const last20Vols = history.slice(-20).map(d => d.volume || 1000000);
-                    const volumeAvg20 = last20Vols.length > 0 ?
-                        last20Vols.reduce((a, b) => a + b, 0) / last20Vols.length :
-                        1000000;
-
-                    dailyInput.assets[t] = {
-                        ticker: t,
-                        price,
-                        position_shares: positions[t],
-                        position_value: posVal,
-                        weight: 0,
-                        pending_orders: pendingForAllocator,
-                        pending_cost: openOrders[t].reduce((sum, o) => sum + (o.qty * o.price), 0),
-                        supportLevels: supportLevels,
-                        indicators: {
-                            rsi,
-                            sma200,
-                            ema20,
-                            volume,
-                            volumeAvg20,
-                            drawdown60d,
-                            priceToSMA200: sma200 > 0 ? (price / sma200) : 1,
-                            volSurge
-                        }
-                    };
-                }
-            });
+                });
 
             // Update weights
             tickers.forEach(t => {
@@ -174,7 +181,9 @@ class BacktestEngine {
                 type: 'NORMAL',  // Placeholder - not used by v9.3
                 underexposure: 5,
                 overextension: 5
-            }; // C. Execute Orders (Fill Check)
+            };
+
+            // C. Execute Orders (Fill Check)
             tickers.forEach(t => {
                 if (!dataMap[t]) return; // Skip if data failed to load
                 const dayData = dataMap[t].find(d => d.date === date);
@@ -226,9 +235,6 @@ class BacktestEngine {
             // DEBUG: Log allocator output on first day and every 30 days
             const dayIndex = commonDates.indexOf(date);
             if (dayIndex % 30 === 0 || dayIndex < 5) {
-                console.log(`[Backtest ${date}] Global Regime:`, plan.global.spyRegime);
-                console.log(`[Backtest ${date}] MSFT Phase:`, plan.assetPlans['MSFT']?.regime);
-
                 console.log(`\n[Day ${dayIndex + 1}] ${date} - Cash: $${cash.toFixed(0)}`);
                 console.log(`Regime: ${dailyInput.regime.phase}, Equity: $${dailyEquity.toFixed(0)}`);
                 Object.values(plan.assetPlans).forEach(p => {
@@ -292,27 +298,39 @@ class BacktestEngine {
             // ... (Refining logic in actual code below) ...
 
             // E. Apply Actions (continued)
-            // E. Apply Actions (continued)
             Object.values(plan.assetPlans).forEach(p => {
-                // 1. Core Buys (Not used in v9.3 yet, but placeholder)
-                // v9.3 uses 'newRungs' for buys, which are handled in the order placement section (not shown here but assumed handled by ladder logic)
-                // If there were immediate market buys, they would be here.
-
-                // 2. Trims (RESET / MELTUP)
-                if (p.coreTrim && p.coreTrim.shares > 0) {
-                    const qty = p.coreTrim.shares;
-                    if (positions[p.ticker] >= qty) {
+                // 1. Core Buys
+                if (p.coreBuy && p.coreBuy.includes('Buy')) {
+                    const match = p.coreBuy.match(/Buy (\d+) .* at market/);
+                    if (match) {
+                        const qty = parseInt(match[1]);
                         const price = currentPrices[p.ticker];
-                        positions[p.ticker] -= qty;
-                        cash += qty * price;
-                        this.results.trades.push({
-                            date, ticker: p.ticker, type: 'SELL (TRIM)', price: price, qty: qty, reason: p.coreTrim.reason || 'Allocator Trim'
-                        });
+                        const cost = qty * price;
+                        if (cash >= cost) {
+                            cash -= cost;
+                            positions[p.ticker] += qty;
+                            this.results.trades.push({
+                                date, ticker: p.ticker, type: 'BUY (CORE)', price: price, qty: qty, reason: 'Core Buy'
+                            });
+                        }
                     }
                 }
 
-                // 3. Full Exits (CATASTROPHIC)
-                else if (p.action === 'EXIT') {
+                // 2. Sells / Trims / Exits
+                if (p.coreBuy && (p.coreBuy.includes('Sell') || p.coreBuy.includes('Trim'))) {
+                    const match = p.coreBuy.match(/Sell (\d+)/);
+                    if (match) {
+                        const qty = parseInt(match[1]);
+                        if (positions[p.ticker] >= qty) {
+                            const price = currentPrices[p.ticker];
+                            positions[p.ticker] -= qty;
+                            cash += qty * price;
+                            this.results.trades.push({
+                                date, ticker: p.ticker, type: 'SELL (TRIM)', price: price, qty: qty, reason: 'Allocator Trim'
+                            });
+                        }
+                    }
+                } else if (p.action === 'EXIT' || (p.coreBuy && p.coreBuy.includes('Exit'))) {
                     // Full Exit
                     const qty = positions[p.ticker];
                     if (qty > 0) {
@@ -320,32 +338,9 @@ class BacktestEngine {
                         positions[p.ticker] = 0;
                         cash += qty * price;
                         this.results.trades.push({
-                            date, ticker: p.ticker, type: 'SELL (EXIT)', price: price, qty: qty, reason: p.coreTrim?.reason || 'Allocator Exit'
+                            date, ticker: p.ticker, type: 'SELL (EXIT)', price: price, qty: qty, reason: 'Allocator Exit'
                         });
                     }
-                }
-
-                // 4. New Rungs (Limit Buys)
-                if (p.ladder) {
-                    p.ladder.forEach(rung => {
-                        if (rung.status === 'NEW') {
-                            // Check if we already have this order (deduplication)
-                            const exists = openOrders[p.ticker].some(o => Math.abs(o.price - rung.price) < 0.01 && o.qty === rung.shares);
-                            if (!exists) {
-                                const cost = rung.shares * rung.price;
-                                if (cash >= cost) {
-                                    cash -= cost;
-                                    openOrders[p.ticker].push({
-                                        type: 'limit_buy',
-                                        price: rung.price,
-                                        qty: rung.shares,
-                                        band: rung.probability + '%',
-                                        reason: rung.reason
-                                    });
-                                }
-                            }
-                        }
-                    });
                 }
             });
 
@@ -458,53 +453,4 @@ class BacktestEngine {
 
         return report;
     }
-}
-
-// --- HELPER FUNCTIONS ---
-
-function btCalculateSMA(data, period) {
-    if (data.length < period) return data[data.length - 1];
-    const slice = data.slice(-period);
-    const sum = slice.reduce((a, b) => a + b, 0);
-    return sum / period;
-}
-
-function btCalculateEMA(data, period) {
-    if (data.length < period) return data[data.length - 1];
-    const k = 2 / (period + 1);
-    let ema = data[0];
-    for (let i = 1; i < data.length; i++) {
-        ema = data[i] * k + ema * (1 - k);
-    }
-    return ema;
-}
-
-function btCalculateRSI(prices, period = 14) {
-    if (prices.length < period + 1) return 50;
-    let gains = 0;
-    let losses = 0;
-
-    for (let i = 1; i <= period; i++) {
-        const change = prices[i] - prices[i - 1];
-        if (change > 0) gains += change;
-        else losses -= change;
-    }
-
-    let avgGain = gains / period;
-    let avgLoss = losses / period;
-
-    for (let i = period + 1; i < prices.length; i++) {
-        const change = prices[i] - prices[i - 1];
-        if (change > 0) {
-            avgGain = (avgGain * 13 + change) / 14;
-            avgLoss = (avgLoss * 13 + 0) / 14;
-        } else {
-            avgGain = (avgGain * 13 + 0) / 14;
-            avgLoss = (avgLoss * 13 - change) / 14;
-        }
-    }
-
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
 }

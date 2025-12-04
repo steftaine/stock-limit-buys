@@ -1444,1302 +1444,17 @@ class StockMeltupExit {
 const stockMeltupExit = new StockMeltupExit();
 
 // --- RAW ARC ALLOCATOR ENGINE v7.5 ---
-/**
- * ANTIGRAVITY v9.2 ALLOCATOR
- * Complete rewrite with 5-phase detection, probability-weighted ladders,
- * proactive RESET trimming, and automatic dip generation
- */
-
-// === ANTIGRAVITY v10 MACRO ENGINE ===
-
-class MacroRegime {
+class RawArcAllocator {
     constructor() {
-        this.PHASES = {
-            COMPRESSION: 'COMPRESSION',
-            MELTUP: 'MELTUP',
-            MINI_RESET: 'MINI-RESET',
-            STRUCTURAL_RESET: 'STRUCTURAL RESET',
-            BOTTOMING: 'BOTTOMING',
-            RECOVERY: 'RECOVERY'
-        };
-    }
-
-    detectPhase(inputs) {
-        const { spx, nasdaq, vix, hySpread, payrolls, unemployment, ism, btc, gold } = inputs;
-
-        // 1. STRUCTURAL RESET (Crash)
-        // SPX -40%+, VIX > 50, HY Spread > 600bps (approx +250 from tights), Unemployment spiking
-        const isStructuralCrash = (
-            (spx.drawdown < -35 || nasdaq.drawdown < -40) &&
-            (vix > 45 || hySpread > 550)
-        );
-
-        if (isStructuralCrash) {
-            return {
-                phase: this.PHASES.STRUCTURAL_RESET,
-                reason: `CRASH DETECTED: SPX ${spx.drawdown}%, VIX ${vix}, HY Spread ${hySpread}bps`,
-                stance: 'PROTECT CAPITAL. Allow deep trims/exits. Cancel deep ladders.'
-            };
-        }
-
-        // 2. MINI-RESET (Shakeout)
-        // SPX -15-25%, VIX 25-45, HY Spread +50-150bps (approx 350-450 total)
-        const isMiniReset = (
-            (spx.drawdown <= -10 && spx.drawdown > -35) &&
-            (vix >= 22 || hySpread >= 350)
-        );
-
-        if (isMiniReset) {
-            return {
-                phase: this.PHASES.MINI_RESET,
-                reason: `SHAKEOUT: SPX ${spx.drawdown}%, VIX ${vix}. Not a structural crash.`,
-                stance: 'BUY DIPS. Do NOT panic sell. Maintain core. Activate ladders.'
-            };
-        }
-
-        // 3. MELTUP
-        // SPX near highs, VIX < 18, Breadth strong
-        const isMeltup = (
-            spx.drawdown > -3 &&
-            vix < 18 &&
-            hySpread < 300
-        );
-
-        if (isMeltup) {
-            return {
-                phase: this.PHASES.MELTUP,
-                reason: `MELTUP: SPX near highs, VIX ${vix} (complacent), Credit tight.`,
-                stance: 'RIDE TREND. Hold core. Trim into extreme extensions only.'
-            };
-        }
-
-        // 4. COMPRESSION
-        // SPX within 10% of high, VIX 12-20, boring
-        const isCompression = (
-            spx.drawdown >= -10 &&
-            vix <= 22
-        );
-
-        if (isCompression) {
-            return {
-                phase: this.PHASES.COMPRESSION,
-                reason: `COMPRESSION: SPX ${spx.drawdown}%, VIX ${vix}. Market coiling.`,
-                stance: 'ACCUMULATE. Build positions before the next move.'
-            };
-        }
-
-        // Default / Recovery
-        return {
-            phase: this.PHASES.RECOVERY,
-            reason: 'RECOVERY/NORMAL: No extreme signals detected.',
-            stance: 'TRADE NORMAL. Follow asset-specific signals.'
-        };
-    }
-}
-
-class AntigravityAllocatorV10 {
-    constructor() {
-        this.assets = ['META', 'MSFT', 'NVDA', 'SMCI', 'BTC-USD'];
-        this.monitorOnly = ['GOOG']; // Monitor but never buy
-        this.banned = ['ETH']; // Completely banned
-
-        this.userState = {
-            holdings: {}, // { ticker: shares }
-            limits: {}, // { ticker: [{ price, size }] }
-            blacklist: {}, // { ticker: [{price, reason}] }
-            rejectedRungs: {} // Permanent rejection memory
-        };
-
+        this.assets = ['META', 'MSFT', 'GOOG', 'NVDA', 'SMCI', 'BTC-USD'];
         this.cashAvailable = 0;
-        this.BOOTSTRAP_LIMIT = 0.40; // 40% max initial deployment
+        this.userState = {
+            holdings: {},
+            limits: {},
+            blacklist: {} // { ticker: [{ low, high, reason }] }
+        };
         this.lastPlan = null;
-
-        // SMCI-specific tracking
-        this.smciBannedZones = []; // Array of {min, max, reason, addedAt}
-
-        // v10: Macro Engine
-        this.macroRegime = new MacroRegime();
     }
-
-    // ============================================================
-    // ASSET TYPE DETECTION
-    // ============================================================
-
-    /**
-     * Detect asset type for type-specific allocation logic
-     * Crypto assets need different phase thresholds and action rules
-     */
-    getAssetType(ticker) {
-        const cryptoTickers = ['BTC-USD', 'ETH-USD', 'BTC', 'ETH'];
-        if (cryptoTickers.includes(ticker)) return 'CRYPTO';
-        if (ticker === 'SMCI') return 'SMCI';
-        return 'STOCK';
-    }
-
-
-    // ============================================================
-    // PHASE DETECTION ENGINE
-    // ============================================================
-
-    /**
-     * Analyze global market regime using SPY
-     * This gates individual stock RESET detections to prevent false signals
-     */
-    analyzeGlobalRegime(spyAsset) {
-        if (!spyAsset || !spyAsset.indicators) {
-            // Default to NORMAL if SPY data unavailable
-            return {
-                regime: 'NORMAL',
-                reason: 'SPY data unavailable',
-                allowReset: false
-            };
-        }
-
-        const { price, indicators } = spyAsset;
-        const { rsi, sma200 } = indicators;
-
-        const priceTosma200Pct = ((price - sma200) / sma200) * 100;
-
-        let stressSignals = 0;
-        const reasons = [];
-
-        // SPY Stress Signals
-        if (priceTosma200Pct < -3) {
-            stressSignals++;
-            reasons.push(`SPY ${priceTosma200Pct.toFixed(1)}% below SMA200`);
-        }
-        if (rsi < 50) {
-            stressSignals++;
-            reasons.push(`SPY RSI ${rsi.toFixed(0)}`);
-        }
-        // Note: VIX check would go here if we have the data
-        // if (vix > 20) { stressSignals++; reasons.push(`VIX ${vix}`); }
-
-        // Determine global regime
-        if (stressSignals >= 2 || priceTosma200Pct < -5) {
-            return {
-                regime: 'RESET',
-                reason: reasons.join(', '),
-                allowReset: true
-            };
-        }
-
-        if (stressSignals >= 1) {
-            return {
-                regime: 'STRESS',
-                reason: reasons.join(', '),
-                allowReset: true  // Allow individual stock RESETs during market stress
-            };
-        }
-
-        return {
-            regime: 'NORMAL',
-            reason: `SPY ${priceTosma200Pct >= 0 ? '+' : ''}${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)}`,
-            allowReset: false  // Block individual stock RESETs when market is healthy
-        };
-    }
-
-    /**
-     * Calculate drawdown from 60-day high
-     */
-    calculateDrawdown(priceHistory, currentPrice) {
-        if (!priceHistory || priceHistory.length < 10) {
-            return 0;  // Not enough data
-        }
-
-        // Get last 60 days (or available data)
-        const last60Days = priceHistory.slice(-60);
-        const high60d = Math.max(...last60Days);
-
-        const drawdown = ((high60d - currentPrice) / high60d) * 100;
-        return Math.max(0, drawdown);  // Never negative
-    }
-
-    detectPhase(asset, globalRegime) {
-        const { ticker, price, indicators } = asset;
-        const { rsi, sma200, ema20, volume, volumeAvg20, drawdown60d } = indicators;
-
-        // Detect asset type for type-specific rules
-        const assetType = this.getAssetType(ticker);
-
-        // Calculate metrics
-        const priceTosma200Pct = ((price - sma200) / sma200) * 100;
-        const priceToEma20Pct = ((price - ema20) / ema20) * 100;
-        const volumeRatio = volume / volumeAvg20;
-
-        // Count stress signals for RESET detection (v9.3 thresholds)
-        let stressSignals = 0;
-        const stressReasons = [];
-
-        // Signal 1: RSI weakness (v9.3: < 38, was 40)
-        if (rsi < 38) {
-            stressSignals++;
-            stressReasons.push(`RSI ${rsi.toFixed(0)}`);
-        }
-
-        // Signal 2: Price breakdown (v9.3: < EMA20 by 4%+, was 3%)
-        if (price < ema20 * 0.96) {  // 4% below EMA20
-            stressSignals++;
-            stressReasons.push(`Price <EMA20 -${Math.abs(priceToEma20Pct).toFixed(1)}%`);
-        }
-
-        // Signal 3: Drawdown (v9.3: NEW - > 20% from 60-day high)
-        if (drawdown60d > 20) {
-            stressSignals++;
-            stressReasons.push(`Drawdown ${drawdown60d.toFixed(1)}%`);
-        }
-
-        // Signal 4: Volume collapse (v9.3: < 45%, was 50%)
-        if (volumeRatio < 0.45) {
-            stressSignals++;
-            stressReasons.push(`Vol collapse ${(volumeRatio * 100).toFixed(0)}%`);
-        }
-
-        // === CRYPTO-SPECIFIC PHASE DETECTION ===
-        if (assetType === 'CRYPTO') {
-            // PARABOLIC: Blowoff top territory (RSI > 80, volume spike, extreme extension)
-            if (rsi > 80 && volumeRatio > 2.0 && price > ema20 * 1.30) {
-                return {
-                    phase: 'PARABOLIC',
-                    reason: `BLOWOFF: RSI ${rsi.toFixed(0)}, Vol ${(volumeRatio * 100).toFixed(0)}%, Price +${priceToEma20Pct.toFixed(1)}% vs EMA20`,
-                    score: 10
-                };
-            }
-
-            // MELTUP: Higher threshold for crypto (1.5x vs 1.12x for stocks)
-            if (price > sma200 * 1.50 && rsi > 70 && volumeRatio > 1.5) {
-                return {
-                    phase: 'MELTUP',
-                    reason: `Price +${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)}, Vol ${(volumeRatio * 100).toFixed(0)}%`,
-                    score: 8
-                };
-            }
-
-            // CATASTROPHIC: Crypto-specific threshold (price < SMA200*0.40)
-            if (price < sma200 * 0.40 && rsi < 32 && volumeRatio < 0.40) {
-                return {
-                    phase: 'CATASTROPHIC',
-                    reason: `CRYPTO COLLAPSE: Price ${priceTosma200Pct.toFixed(1)}% below SMA200, RSI ${rsi.toFixed(0)}`,
-                    score: 0
-                };
-            }
-
-            // RESET: Crypto ignores global SPY regime, uses deeper threshold (0.70 vs 0.90)
-            if (stressSignals >= 2 && price < sma200 * 0.70) {
-                return {
-                    phase: 'RESET',
-                    reason: `CRYPTO RESET: ${stressReasons.join(', ')}`,
-                    score: 2
-                };
-            }
-
-            // NORMAL: Default for crypto
-            return {
-                phase: 'NORMAL',
-                reason: `Price ${priceTosma200Pct >= 0 ? '+' : ''}${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)}`,
-                score: 4
-            };
-        }
-
-        // === SMCI-SPECIFIC PHASE DETECTION ===
-        if (assetType === 'SMCI') {
-            // Need priceChange24h for SMCI logic (calculate from historical data if available)
-            const priceChange24h = 0; // Placeholder - would need to calculate from data
-
-            // CATASTROPHIC: Fail fast (trigger on ANY condition)
-            const catastrophicCond1 = (priceTosma200Pct < -10 && rsi < 40 && volumeRatio >= 1.5);
-            const catastrophicCond2 = (priceChange24h < -15 && volumeRatio >= 2.0);
-
-            if (catastrophicCond1 || catastrophicCond2) {
-                return {
-                    phase: 'CATASTROPHIC',
-                    reason: `SMCI CATASTROPHIC: ${catastrophicCond1 ? 'Structure breakdown' : 'Violent selloff'}`,
-                    score: 0
-                };
-            }
-
-            // RESET: Blowoff/overstretched (ANY TWO of four triggers)
-            let resetSignals = 0;
-            const resetReasons = [];
-
-            if (rsi > 72) {
-                resetSignals++;
-                resetReasons.push(`RSI ${rsi.toFixed(0)}`);
-            }
-            if (priceToEma20Pct > 15) {
-                resetSignals++;
-                resetReasons.push(`+${priceToEma20Pct.toFixed(1)}% vs EMA20`);
-            }
-            if (priceChange24h > 12) {
-                resetSignals++;
-                resetReasons.push(`+${priceChange24h.toFixed(1)}% day`);
-            }
-            if (priceTosma200Pct > 20) {
-                resetSignals++;
-                resetReasons.push(`+${priceTosma200Pct.toFixed(1)}% vs SMA200`);
-            }
-
-            if (resetSignals >= 2) {
-                return {
-                    phase: 'RESET',
-                    reason: `SMCI RESET: ${resetReasons.join(', ')}`,
-                    score: 2
-                };
-            }
-
-            // NORMAL: Validate normal conditions
-            if (rsi >= 40 && rsi <= 70 && Math.abs(priceToEma20Pct) <= 15 && volumeRatio <= 1.5) {
-                return {
-                    phase: 'NORMAL',
-                    reason: `SMCI NORMAL: RSI ${rsi.toFixed(0)}, ${priceTosma200Pct >= 0 ? '+' : ''}${priceTosma200Pct.toFixed(1)}% vs SMA200`,
-                    score: 4
-                };
-            }
-
-            // Default to NORMAL (cautious)
-            return {
-                phase: 'NORMAL',
-                reason: `SMCI watching: RSI ${rsi.toFixed(0)}`,
-                score: 4
-            };
-        }
-
-        // === STOCK PHASE DETECTION (Existing Logic) ===
-
-        // PHASE 5: CATASTROPHIC (v9.3: price < SMA200*0.85 AND RSI < 32 AND volume < 40% AND global regime allows)
-        if (price < sma200 * 0.85 && rsi < 32 && volumeRatio < 0.40) {
-            // CATASTROPHIC can override global regime for extreme individual stock breakdowns
-            return {
-                phase: 'CATASTROPHIC',
-                reason: `Price ${priceTosma200Pct.toFixed(1)}% below SMA200, RSI ${rsi.toFixed(0)}, Vol ${(volumeRatio * 100).toFixed(0)}%`,
-                score: 0
-            };
-        }
-
-        // PHASE 4: RESET (v9.3: requires 2+ signals AND global regime allows OR individual extreme case)
-        if (stressSignals >= 2) {
-            // Check global regime gating
-            if (globalRegime && !globalRegime.allowReset) {
-                // Market is healthy - only allow RESET for extreme individual cases
-                // Extreme case: > 22% drawdown + price well below SMA200
-                if (drawdown60d > 22 && price < sma200 * 0.80) {
-                    return {
-                        phase: 'RESET',
-                        reason: `${stressReasons.join(', ')} [Individual extreme, market ${globalRegime.regime}]`,
-                        score: 2
-                    };
-                }
-
-                // Otherwise, classify as NORMAL despite stress signals
-                return {
-                    phase: 'NORMAL',
-                    reason: `Price ${priceTosma200Pct >= 0 ? '+' : ''}${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)} [Market healthy, ${globalRegime.reason}]`,
-                    score: 4
-                };
-            }
-
-            // Global regime allows RESET
-            return {
-                phase: 'RESET',
-                reason: stressReasons.join(', '),
-                score: 2
-            };
-        }
-
-        // PHASE 3: MELTUP (all conditions must be met)
-        if (price > sma200 * 1.12 && rsi > 70 && volumeRatio > 1.5) {
-            return {
-                phase: 'MELTUP',
-                reason: `Price +${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)}, Vol ${(volumeRatio * 100).toFixed(0)}%`,
-                score: 8
-            };
-        }
-
-        // PHASE 2: IGNITION (all conditions must be met)
-        if (price > sma200 * 1.05 && rsi >= 60 && rsi <= 72 && volumeRatio > 1.3) {
-            return {
-                phase: 'IGNITION',
-                reason: `Price +${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)}, Vol ${(volumeRatio * 100).toFixed(0)}%`,
-                score: 6
-            };
-        }
-
-        // PHASE 1: NORMAL (default)
-        return {
-            phase: 'NORMAL',
-            reason: `Price ${priceTosma200Pct >= 0 ? '+' : ''}${priceTosma200Pct.toFixed(1)}% vs SMA200, RSI ${rsi.toFixed(0)}, Vol ${(volumeRatio * 100).toFixed(0)}%`,
-            score: 4
-        };
-    }
-
-    // ============================================================
-    // PROBABILITY LADDER LOGIC
-    // ============================================================
-
-    /**
-     * Determine if a rung at a given price is allowed based on probability rules
-     */
-    isRungAllowed(asset, targetPrice, probability) {
-        const { price, indicators } = asset;
-        const { sma200 } = indicators;
-
-        const distFromSma200Pct = ((price - targetPrice) / sma200) * 100;
-
-        // Probability rules
-        if (probability === 80) {
-            // Only if targetPrice < SMA200 - 8%
-            return targetPrice < sma200 * 0.92;
-        }
-        if (probability === 60) {
-            // Only if targetPrice < SMA200 - 5%
-            return targetPrice < sma200 * 0.95;
-        }
-        // 30% and 5% are always allowed
-        return true;
-    }
-
-    // ============================================================
-    // SMCI-SPECIFIC HELPERS
-    // ============================================================
-
-    /**
-     * Validate SMCI rung against position sizing caps
-     */
-    validateSMCIRung(rungCost, totalSMCIExposure, totalSMCILadderCapital, totalPortfolioValue) {
-        // MAX_SMCI_EXPOSURE_PORTFOLIO = 5%
-        if ((totalSMCIExposure + rungCost) > totalPortfolioValue * 0.05) {
-            return { allowed: false, reason: 'SMCI cap hit – risk cage (5% exposure)' };
-        }
-
-        // MAX_SMCI_LADDERS_PORTFOLIO = 3%
-        if ((totalSMCILadderCapital + rungCost) > totalPortfolioValue * 0.03) {
-            return { allowed: false, reason: 'SMCI cap hit – risk cage (3% ladder)' };
-        }
-
-        // MAX_SMCI_RUNG_PORTFOLIO = 0.75%
-        if (rungCost > totalPortfolioValue * 0.0075) {
-            return { allowed: false, reason: 'SMCI cap hit – risk cage (0.75% per rung)' };
-        }
-
-        // MAX_RUNG_SHARE_OF_SMCI = 20%
-        const futureExposure = totalSMCIExposure + rungCost;
-        if (futureExposure > 0 && rungCost > futureExposure * 0.20) {
-            return { allowed: false, reason: 'SMCI cap hit – risk cage (20% of SMCI)' };
-        }
-
-        return { allowed: true };
-    }
-
-    /**
-     * Determine SMCI buy zone based on price distance from SMA200
-     */
-    getSMCIBuyZone(price, sma200) {
-        const pctVsSMA200 = ((price - sma200) / sma200) * 100;
-
-        if (pctVsSMA200 < -25) {
-            return { zone: 'REJECT_BROKEN', allowed: false, reason: 'SMCI broken below structure – no knife catching' };
-        }
-        if (pctVsSMA200 > 20) {
-            return { zone: 'REJECT_PARABOLIC', allowed: false, reason: 'SMCI parabolic – no chase' };
-        }
-        if (pctVsSMA200 >= -15 && pctVsSMA200 <= 5) {
-            return { zone: 'STRUCTURAL', allowed: true, maxRungPct: 0.0075 }; // 0.75%
-        }
-        if (pctVsSMA200 >= -25 && pctVsSMA200 < -15) {
-            return { zone: 'SNIPER', allowed: true, maxRungPct: 0.0025 }; // 0.25%
-        }
-
-        return { zone: 'NEUTRAL', allowed: false, reason: 'SMCI outside buy zones' };
-    }
-
-    /**
-     * Check if a price falls within any banned zone
-     */
-    isSMCIPriceBanned(price) {
-        return this.smciBannedZones.some(range =>
-            price >= range.min && price <= range.max
-        );
-    }
-
-    /**
-     * Add a price to the banned zones list
-     */
-    addSMCIBannedZone(price, reason) {
-        const range = {
-            min: price * 0.97,
-            max: price * 1.03,
-            reason: reason,
-            addedAt: new Date().toISOString()
-        };
-        this.smciBannedZones.push(range);
-    }
-
-    /**
-     * Generate automatic dip rungs based on price distance from SMA200
-     */
-    generateAutoDipRungs(asset, dryPowder) {
-        const { ticker, price, indicators } = asset;
-        const { sma200 } = indicators;
-
-        const newRungs = [];
-        const priceTosma200Pct = ((price - sma200) / sma200) * 100;
-        const assetType = this.getAssetType(ticker);
-
-        // === CRASH PROTECTION (Asset-Specific) ===
-        if (assetType === 'CRYPTO') {
-            // CRYPTO CRASH BRAKES: More severe thresholds
-            // 50% drawdown brake (vs 35% for stocks)
-            if (indicators.drawdown60d > 50) {
-                return newRungs;
-            }
-
-            // Super crash brake: price < 40% of SMA200 (vs 60% for stocks)
-            if (price < sma200 * 0.40) {
-                return newRungs;
-            }
-        } else {
-            // STOCK CRASH BRAKES: Original thresholds
-            // 35% drawdown brake
-            if (indicators.drawdown60d > 35) {
-                return newRungs;
-            }
-
-            // Super crash brake: price < 60% of SMA200
-            if (price < sma200 * 0.60) {
-                return newRungs;
-            }
-        }
-
-        // Only generate if price is ACTUALLY below SMA200
-        if (priceTosma200Pct >= -10) {
-            // Not deep enough below SMA200 to auto-generate
-            return newRungs;
-        }
-
-        // === DIP RUNGS (Asset-Specific) ===
-        if (assetType === 'CRYPTO') {
-            // CRYPTO DIP RUNGS: Much deeper (-40%, -60%, -80%)
-            // First rung: -40% below SMA200
-            if (priceTosma200Pct >= -50 && priceTosma200Pct < -30) {
-                const targetPrice = sma200 * 0.60; // 40% below SMA200
-                const allocation = dryPowder * 0.08; // 8% of dry powder
-
-                if (allocation > targetPrice) {
-                    newRungs.push({
-                        price: targetPrice,
-                        shares: Math.floor(allocation / targetPrice),
-                        dollarValue: allocation,
-                        probability: 30,
-                        status: 'NEW',
-                        reason: 'CRYPTO dip buy (40% below SMA200)'
-                    });
-                }
-            }
-
-            // Second rung: -60% below SMA200
-            if (priceTosma200Pct < -50) {
-                const targetPrice = sma200 * 0.40; // 60% below SMA200
-                const allocation = dryPowder * 0.08; // 8% of dry powder
-
-                if (allocation > targetPrice) {
-                    newRungs.push({
-                        price: targetPrice,
-                        shares: Math.floor(allocation / targetPrice),
-                        dollarValue: allocation,
-                        probability: 10,
-                        status: 'NEW',
-                        reason: 'CRYPTO deep value (60% below SMA200)'
-                    });
-                }
-            }
-
-            // Third rung: -80% below SMA200 (ultimate crash buy)
-            if (priceTosma200Pct < -70) {
-                const targetPrice = sma200 * 0.20; // 80% below SMA200
-                const allocation = dryPowder * 0.05; // 5% of dry powder
-
-                if (allocation > targetPrice) {
-                    newRungs.push({
-                        price: targetPrice,
-                        shares: Math.floor(allocation / targetPrice),
-                        dollarValue: allocation,
-                        probability: 5,
-                        status: 'NEW',
-                        reason: 'CRYPTO ultimate crash buy (80% below SMA200)'
-                    });
-                }
-            }
-
-        } else {
-            // STOCK DIP RUNGS: Original logic (-20%, -30%)
-            // First rung: -20% below SMA200
-            if (priceTosma200Pct >= -25 && priceTosma200Pct < -15) {
-                const targetPrice = sma200 * 0.80; // 20% below SMA200
-                const allocation = dryPowder * 0.10; // 10% of dry powder
-
-                if (allocation > targetPrice) {
-                    newRungs.push({
-                        price: targetPrice,
-                        shares: Math.floor(allocation / targetPrice),
-                        dollarValue: allocation,
-                        probability: 30,
-                        status: 'NEW',
-                        reason: 'Auto-generated dip buy (20% below SMA200)'
-                    });
-                }
-            }
-
-            // Second rung: -30% below SMA200
-            if (priceTosma200Pct < -25) {
-                const targetPrice = sma200 * 0.70; // 30% below SMA200
-                const allocation = dryPowder * 0.10; // 10% of dry powder
-
-                if (allocation > targetPrice) {
-                    newRungs.push({
-                        price: targetPrice,
-                        shares: Math.floor(allocation / targetPrice),
-                        dollarValue: allocation,
-                        probability: 5,
-                        status: 'NEW',
-                        reason: 'Auto-generated deep value (30% below SMA200)'
-                    });
-                }
-            }
-        }
-
-        return newRungs;
-    }
-
-    /**
-     * Generate SMCI-specific rungs based on structural and sniper zones
-     */
-    generateSMCIRungs(asset, dryPowder, totalPool) {
-        const { price, indicators } = asset;
-        const { sma200 } = indicators;
-
-        const rungs = [];
-        const zoneInfo = this.getSMCIBuyZone(price, sma200);
-
-        if (!zoneInfo.allowed) {
-            return rungs; // Rejected zone
-        }
-
-        // Calculate current SMCI exposure (position + pending)
-        const totalSMCIExposure = asset.position_value;
-        const totalSMCILadderCapital = asset.pending_orders.reduce((sum, o) => sum + (o.price * o.shares), 0);
-
-        // Generate rungs based on zone
-        if (zoneInfo.zone === 'STRUCTURAL') {
-            // Normal structural rungs at -5%, -10%, -15%
-            const rungPrices = [sma200 * 0.95, sma200 * 0.90, sma200 * 0.85];
-
-            for (const targetPrice of rungPrices) {
-                if (price <= targetPrice) continue; // Don't place above current price
-
-                const allocation = Math.min(dryPowder * 0.10, totalPool * zoneInfo.maxRungPct);
-                const shares = Math.floor(allocation / targetPrice);
-                const cost = shares * targetPrice;
-
-                // Validate caps
-                const validation = this.validateSMCIRung(cost, totalSMCIExposure, totalSMCILadderCapital, totalPool);
-                if (!validation.allowed) continue;
-
-                // Check banned zones
-                if (this.isSMCIPriceBanned(targetPrice)) continue;
-
-                rungs.push({
-                    price: targetPrice,
-                    shares,
-                    probability: 30,
-                    status: 'NEW',
-                    reason: `SMCI structural (${Math.round(((targetPrice / sma200) - 1) * 100)}% vs SMA200)`
-                });
-            }
-        } else if (zoneInfo.zone === 'SNIPER') {
-            // Sniper rung at -20%
-            const targetPrice = sma200 * 0.80;
-            if (price > targetPrice) {
-                const allocation = totalPool * 0.0025; // 0.25% max
-                const shares = Math.floor(allocation / targetPrice);
-                const cost = shares * targetPrice;
-
-                const validation = this.validateSMCIRung(cost, totalSMCIExposure, totalSMCILadderCapital, totalPool);
-                if (validation.allowed && !this.isSMCIPriceBanned(targetPrice)) {
-                    rungs.push({
-                        price: targetPrice,
-                        shares,
-                        probability: 10,
-                        status: 'NEW',
-                        reason: 'SNIPER – deep flush, optional'
-                    });
-                }
-            }
-        }
-
-        return rungs;
-    }
-
-    // ============================================================
-    // ACTION LOGIC PER PHASE
-    // ============================================================
-
-    getPhaseAction(asset, regime, dryPowder, totalPool, macroPhase) {
-        const { ticker, position_shares, position_value, pending_orders } = asset;
-        const { phase } = regime;
-
-        const action = {
-            phase,
-            coreTrim: null, // { shares, reason }
-            coreAction: 'HOLD',
-            newRungs: [],
-            modifiedRungs: [],
-            meltupExits: null
-        };
-
-        // GOOG: Monitor only
-        if (this.monitorOnly.includes(ticker)) {
-            action.coreAction = 'MONITOR (BAN)';
-            return action;
-        }
-
-        // v10: MACRO OVERRIDES
-        if (macroPhase) {
-            // 1. MINI-RESET: Force HOLD, Block Panic Exits
-            if (macroPhase.phase === 'MINI-RESET') {
-                // If asset signals CATASTROPHIC/RESET during a known shakeout, ignore the panic signal
-                // UNLESS it's a specific asset breakdown (e.g. SMCI fraud) - handled by asset specific logic later?
-                // For now, we apply a blanket "Don't Panic" rule for general market stress
-                if (phase === 'CATASTROPHIC' || phase === 'RESET') {
-                    console.log(`[Allocator] MACRO OVERRIDE: Blocking ${phase} exit due to MINI-RESET`);
-                    // We will proceed to generate dip rungs instead of exiting
-                    // But we must ensure we don't return early with an EXIT action below
-                }
-            }
-        }
-
-        // CATASTROPHIC: Full exit
-        if (phase === 'CATASTROPHIC') {
-            // v10: Check for Macro Override
-            if (macroPhase && macroPhase.phase === 'MINI-RESET') {
-                // Downgrade to NORMAL/RESET to allow dip buying instead of exit
-                // Unless it's SMCI (handled separately)
-                if (ticker !== 'SMCI') {
-                    // Fall through to normal logic
-                } else {
-                    // SMCI Catastrophic is likely real (fraud/accounting), respect it
-                    action.coreAction = 'EXIT';
-                    action.coreTrim = {
-                        shares: position_shares,
-                        reason: 'Catastrophic breakdown - Full exit'
-                    };
-                    // Cancel all pending orders
-                    action.modifiedRungs = pending_orders.map(o => ({
-                        ...o,
-                        status: 'CANCEL',
-                        reason: 'Catastrophic phase - Cancel all'
-                    }));
-                    return action;
-                }
-            } else {
-                // Standard CATASTROPHIC logic
-                action.coreAction = 'EXIT';
-                action.coreTrim = {
-                    shares: position_shares,
-                    reason: 'Catastrophic breakdown - Full exit'
-                };
-                // Cancel all pending orders
-                action.modifiedRungs = pending_orders.map(o => ({
-                    ...o,
-                    status: 'CANCEL',
-                    reason: 'Catastrophic phase - Cancel all'
-                }));
-                return action;
-            }
-        }
-
-        // Detect asset type for type-specific actions
-        const assetType = this.getAssetType(ticker);
-
-        // ===== PARABOLIC PHASE (Crypto Only) =====
-        if (phase === 'PARABOLIC') {
-            // Blowoff top detected - hold core but set immediate exit
-            const { indicators } = asset;
-
-            // Exit trigger: If RSI > 85 and volume spikes even more, exit 70%
-            if (indicators.rsi > 85) {
-                action.coreTrim = {
-                    shares: Math.floor(position_shares * 0.70),
-                    reason: 'PARABOLIC BLOWOFF (RSI > 85) - Exit 70%'
-                };
-            }
-
-            // Set extreme exit targets (capture moonshot)
-            const currentPrice = asset.price;
-            const exitTargets = [
-                { price: currentPrice * 1.50, pct: 0.10 }, // +50%, sell 10%
-                { price: currentPrice * 2.00, pct: 0.20 }, // +100%, sell 20%
-                { price: currentPrice * 3.00, pct: 0.30 }, // +200%, sell 30%
-                { price: currentPrice * 5.00, pct: 0.40 }  // +400%, sell 40%
-            ];
-
-            action.meltupExits = exitTargets.map(t => ({
-                price: t.price,
-                shares: Math.floor(position_shares * t.pct),
-                reason: `Parabolic Exit (+${Math.round((t.price / currentPrice - 1) * 100)}%)`
-            })).filter(t => t.shares > 0);
-
-            // Cancel all buys
-            action.modifiedRungs = pending_orders.map(o => ({
-                ...o,
-                status: 'CANCEL',
-                reason: 'PARABOLIC - No buying at blowoff'
-            }));
-
-            return action;
-        }
-
-        // ===== SMCI PHASE (Strict Risk Cage) =====
-        if (assetType === 'SMCI') {
-            // CATASTROPHIC: Nuke 70% immediately
-            if (phase === 'CATASTROPHIC') {
-                action.coreTrim = {
-                    shares: Math.floor(position_shares * 0.70),
-                    reason: 'SMCI CATASTROPHIC – Fail fast 70% exit'
-                };
-
-                // Cancel ALL orders
-                action.modifiedRungs = pending_orders.map(o => ({
-                    ...o,
-                    status: 'CANCEL',
-                    reason: 'SMCI CATASTROPHIC - Clear all'
-                }));
-
-                // Optional sniper of last resort (if remaining exposure <= 2% of portfolio)
-                if (position_value * 0.30 <= totalPool * 0.02) {
-                    const sniperPrice = asset.indicators.sma200 * 0.78; // -22%
-                    const sniperAllocation = totalPool * 0.0025; // 0.25%
-                    const sniperShares = Math.floor(sniperAllocation / sniperPrice);
-
-                    if (sniperShares > 0) {
-                        action.newRungs.push({
-                            price: sniperPrice,
-                            shares: sniperShares,
-                            probability: 5,
-                            status: 'NEW',
-                            reason: 'SNIPER – post-flush probe'
-                        });
-                    }
-                }
-
-                return action;
-            }
-
-            // RESET: Trim 50% into strength
-            if (phase === 'RESET') {
-                action.coreTrim = {
-                    shares: Math.floor(position_shares * 0.50),
-                    reason: 'SMCI RESET – Derisk 50% into strength'
-                };
-
-                // Cancel buys ABOVE SMA200
-                const { sma200 } = asset.indicators;
-                action.modifiedRungs = pending_orders
-                    .filter(o => o.price > sma200)
-                    .map(o => ({
-                        ...o,
-                        status: 'CANCEL',
-                        reason: 'SMCI RESET - Cancel above SMA200'
-                    }));
-
-                return action;
-            }
-
-            // NORMAL: Generate rungs (with zone/cap validation)
-            if (phase === 'NORMAL') {
-                action.newRungs = this.generateSMCIRungs(asset, dryPowder, totalPool);
-                return action;
-            }
-        }
-
-        // ===== RESET PHASE =====
-        if (phase === 'RESET') {
-            const { price, indicators } = asset;
-            const { sma200 } = indicators;
-
-            if (assetType === 'CRYPTO') {
-                // CRYPTO RESET: Only trim if above 70% of SMA200
-                if (price > sma200 * 0.70) {
-                    const trimShares = Math.floor(position_shares * 0.35);
-                    if (trimShares > 0) {
-                        action.coreTrim = {
-                            shares: trimShares,
-                            reason: 'CRYPTO RESET - Proactive 35% derisking'
-                        };
-                    }
-                }
-            } else {
-                // STOCK RESET: Only trim if above 90% of SMA200
-                if (price > sma200 * 0.90) {
-                    const trimShares = Math.floor(position_shares * 0.35);
-                    if (trimShares > 0) {
-                        action.coreTrim = {
-                            shares: trimShares,
-                            reason: 'RESET phase - Proactive 35% derisking'
-                        };
-                    }
-                }
-            }
-
-            // Generate new lower rungs
-            action.newRungs = this.generateAutoDipRungs(asset, dryPowder);
-
-            // Cancel high-probability rungs (60%, 80%)
-            action.modifiedRungs = pending_orders
-                .filter(o => o.probability >= 60)
-                .map(o => ({
-                    ...o,
-                    status: 'CANCEL',
-                    reason: 'RESET phase - Cancel high-prob rungs'
-                }));
-
-            return action;
-        }
-
-        // ===== MELTUP PHASE =====
-        if (phase === 'MELTUP') {
-            const { indicators } = asset;
-            const currentPrice = asset.price;
-
-            if (assetType === 'CRYPTO') {
-                // CRYPTO MELTUP: Hold until truly insane (RSI > 90)
-                if (indicators.rsi > 90) {
-                    const trimShares = Math.floor(position_shares * 0.10);
-                    if (trimShares > 0) {
-                        action.coreTrim = {
-                            shares: trimShares,
-                            reason: 'CRYPTO MELTUP (RSI > 90) - Light trim 10%'
-                        };
-                    }
-                }
-
-                // Crypto exit targets: Much more aggressive (ride the moon)
-                const exitTargets = [
-                    { price: currentPrice * 1.50, pct: 0.05 }, // +50%, sell 5%
-                    { price: currentPrice * 2.00, pct: 0.10 }, // +100%, sell 10%
-                    { price: currentPrice * 3.00, pct: 0.15 }, // +200%, sell 15%
-                    { price: currentPrice * 5.00, pct: 0.20 }, // +400%, sell 20%
-                    { price: currentPrice * 10.0, pct: 0.50 }  // +900%, sell 50%
-                ];
-
-                action.meltupExits = exitTargets.map(t => ({
-                    price: t.price,
-                    shares: Math.floor(position_shares * t.pct),
-                    reason: `Crypto Meltup Exit (+${Math.round((t.price / currentPrice - 1) * 100)}%)`
-                })).filter(t => t.shares > 0);
-
-            } else {
-                // STOCK MELTUP: Original logic (trim at RSI > 90)
-                if (indicators.rsi > 90) {
-                    const trimShares = Math.floor(position_shares * 0.10);
-                    if (trimShares > 0) {
-                        action.coreTrim = {
-                            shares: trimShares,
-                            reason: 'MELTUP phase (Insane RSI > 90) - Proactive 10% trim'
-                        };
-                    }
-                }
-
-                // Stock exit targets: Conservative
-                const exitTargets = [
-                    { price: currentPrice * 1.20, pct: 0.05 }, // +20%, sell 5%
-                    { price: currentPrice * 1.40, pct: 0.10 }, // +40%, sell 10%
-                    { price: currentPrice * 1.70, pct: 0.15 }, // +70%, sell 15%
-                    { price: currentPrice * 2.00, pct: 0.20 }, // +100%, sell 20%
-                    { price: currentPrice * 3.00, pct: 0.50 }  // +200%, sell 50%
-                ];
-
-                action.meltupExits = exitTargets.map(t => ({
-                    price: t.price,
-                    shares: Math.floor(position_shares * t.pct),
-                    reason: `Meltup Exit (+${Math.round((t.price / currentPrice - 1) * 100)}%)`
-                })).filter(t => t.shares > 0);
-            }
-
-            // Cancel all new buys
-            action.modifiedRungs = pending_orders.map(o => ({
-                ...o,
-                status: 'CANCEL',
-                reason: 'MELTUP - Stop buying'
-            }));
-
-            return action;
-        }
-
-        // IGNITION: Deploy 20% dry powder at fair value
-        if (phase === 'IGNITION') {
-            const deploymentAmount = dryPowder * 0.20;
-            const fairValue = asset.indicators.sma200;
-
-            if (asset.price <= fairValue * 1.02) {
-                action.newRungs.push({
-                    price: fairValue,
-                    shares: Math.floor(deploymentAmount / fairValue),
-                    dollarValue: deploymentAmount,
-                    probability: 30,
-                    status: 'NEW',
-                    reason: 'IGNITION - Fair value entry'
-                });
-            }
-
-            // Freeze deep rungs
-            action.modifiedRungs = pending_orders
-                .filter(o => o.price < asset.price * 0.85)
-                .map(o => ({
-                    ...o,
-                    status: 'CANCEL',
-                    reason: 'IGNITION - Freeze deep rungs'
-                }));
-
-            return action;
-        }
-
-        // NORMAL: Hold + allow 30% and 5% rungs
-        // Keep existing rungs but filter high-probability ones
-        action.modifiedRungs = pending_orders
-            .filter(o => o.probability >= 60)
-            .map(o => ({
-                ...o,
-                status: 'CANCEL',
-                reason: 'NORMAL - Only 30% and 5% allowed'
-            }));
-
-        return action;
-    }
-
-    /**
-     * Generate 5-tranche meltup exit plan
-     */
-    generate5TrancheExits(asset) {
-        const { position_shares, price, indicators } = asset;
-        const { sma200, rsi } = indicators;
-
-        const sharesPerTranche = Math.floor(position_shares / 5);
-
-        return {
-            tranches: [
-                {
-                    shares: sharesPerTranche,
-                    trigger: `Price >= $${(sma200 * 1.12).toFixed(2)}`,
-                    reason: 'SMA200 + 12%'
-                },
-                {
-                    shares: sharesPerTranche,
-                    trigger: `Price >= $${(sma200 * 1.18).toFixed(2)}`,
-                    reason: 'SMA200 + 18%'
-                },
-                {
-                    shares: sharesPerTranche,
-                    trigger: 'RSI >= 80',
-                    reason: 'Extreme overbought'
-                },
-                {
-                    shares: sharesPerTranche,
-                    trigger: 'New ATH + Divergence',
-                    reason: 'Negative divergence signal'
-                },
-                {
-                    shares: position_shares - (sharesPerTranche * 4),
-                    trigger: 'Trailing stop -8%',
-                    reason: '8% off local peak'
-                }
-            ]
-        };
-    }
-
-    // ============================================================
-    // MAIN ALLOCATION ENGINE
-    // ============================================================
-
-    generateGlobalPoolPlan(input) {
-        const plan = {
-            assetPlans: {},
-            global: {
-                totalPool: input.cash_available,
-                initialCash: input.cash_available,
-                deployedValue: 0,
-                dryPowder: input.cash_available,
-                regime: null,
-                spyRegime: null,
-                macro: null // v10: Macro Phase
-            },
-            rejectedRungs: [],
-            summary: ''
-        };
-
-        // v10: Detect Global Macro Phase
-        const macroPhase = this.macroRegime.detectPhase(input.macro);
-        plan.global.macro = macroPhase;
-
-        // v9.3: Analyze global market regime using SPY
-        const spyAsset = input.assets['SPY'];
-        const globalRegime = this.analyzeGlobalRegime(spyAsset);
-        plan.global.spyRegime = globalRegime;
-
-        // Calculate dry powder (40% bootstrap limit)
-        const maxInitialDeployment = input.cash_available * this.BOOTSTRAP_LIMIT;
-        let dryPowder = input.cash_available;
-
-        // Process each asset
-        Object.values(input.assets).forEach(asset => {
-            // v9.3: Pass globalRegime to detectPhase for gating
-            const regime = this.detectPhase(asset, globalRegime);
-            // v10: Pass macroPhase to getPhaseAction for overrides
-            const action = this.getPhaseAction(asset, regime, dryPowder, input.cash_available, macroPhase);
-
-            const assetPlan = {
-                ticker: asset.ticker,
-                price: asset.price, // Pass price for reporting
-                regime,
-                action: action.coreAction,
-                coreTrim: action.coreTrim,
-                ladder: [],
-                newRungs: action.newRungs || [],
-                meltupExits: action.meltupExits,
-                position: {
-                    shares: asset.position_shares,
-                    value: asset.position_value
-                }
-            };
-
-            // Process existing orders
-            asset.pending_orders.forEach(order => {
-                const modified = action.modifiedRungs.find(m =>
-                    Math.abs(m.price - order.price) < 0.01 && m.size === order.size
-                );
-
-                if (modified) {
-                    assetPlan.ladder.push(modified);
-                    if (modified.status === 'CANCEL') {
-                        dryPowder += order.price * order.size;
-                    }
-                } else {
-                    assetPlan.ladder.push({
-                        price: order.price,
-                        shares: order.size,
-                        status: 'KEEP',
-                        reason: 'Active'
-                    });
-                }
-            });
-
-            // Add new rungs
-            action.newRungs.forEach(rung => {
-                assetPlan.ladder.push(rung);
-                dryPowder -= rung.dollarValue;
-            });
-
-            plan.assetPlans[asset.ticker] = assetPlan;
-        });
-
-        plan.global.dryPowder = dryPowder;
-        plan.global.deployedValue = input.cash_available - dryPowder;
-
-        return plan;
-    }
-
-    // ============================================================
-    // OUTPUT RENDERING
-    // ============================================================
-
-    renderReport(input, plan) {
-        let report = `╔═══════════════════════════════════════╗\n`;
-        report += `║  ANTIGRAVITY v10 MACRO ENGINE       ║\n`;
-        report += `╚═══════════════════════════════════════╝\n\n`;
-
-        // v10: Global Macro Phase Block
-        if (plan.global.macro) {
-            const m = plan.global.macro;
-            report += `═══ GLOBAL MACRO PHASE ═══\n`;
-            report += `PHASE: ${m.phase}\n`;
-            report += `Reason: ${m.reason}\n`;
-            report += `Stance: ${m.stance}\n\n`;
-        }
-
-        // Regime Summary
-        report += `═══ REGIME SUMMARY ═══\n`;
-        Object.values(plan.assetPlans).forEach(p => {
-            report += `\n${p.ticker}:\n`;
-            report += `  Phase: ${p.regime.phase}\n`;
-            report += `  Reason: ${p.regime.reason}\n`;
-            report += `  Action: ${p.action}\n`;
-            if (p.coreTrim) {
-                report += `  Core Trim: ${p.coreTrim.shares} shares (${p.coreTrim.reason})\n`;
-            }
-        });
-
-        // Core Holdings
-        report += `\n\n═══ CORE HOLDINGS ═══\n`;
-        Object.values(plan.assetPlans).forEach(p => {
-            if (p.position.shares > 0) {
-                const targetShares = p.coreTrim
-                    ? p.position.shares - p.coreTrim.shares
-                    : p.position.shares;
-
-                const value = p.position.shares * p.price;
-                const valueStr = value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-
-                report += `${p.ticker}: ${p.position.shares} shares (${valueStr})`;
-                if (targetShares !== p.position.shares) {
-                    report += ` → ${targetShares}`;
-                }
-                if (p.coreTrim) {
-                    report += ` (Trim ${p.coreTrim.shares})`;
-                }
-                report += `\n`;
-            }
-        });
-
-        // Ladder Details
-        report += `\n\n═══ LADDER RUNGS ═══\n`;
-        Object.values(plan.assetPlans).forEach(p => {
-            if (p.ladder.length > 0 || p.newRungs.length > 0) {
-                report += `\n${p.ticker}:\n`;
-                p.ladder.forEach(rung => {
-                    const statusIcon = rung.status === 'KEEP' ? '✓' :
-                        rung.status === 'CANCEL' ? '✗' : '★';
-                    report += `  ${statusIcon} $${rung.price.toFixed(2)} × ${rung.shares} shares`;
-                    if (rung.probability) {
-                        report += ` [${rung.probability}%]`;
-                    }
-                    report += ` - ${rung.reason}\n`;
-                });
-            }
-        });
-
-        // Meltup Exits
-        const meltupAssets = Object.values(plan.assetPlans).filter(p => p.meltupExits);
-        if (meltupAssets.length > 0) {
-            report += `\n\n═══ MELTUP EXIT PLAN ═══\n`;
-            meltupAssets.forEach(p => {
-                report += `\n${p.ticker} (5-Tranche Exits):\n`;
-                p.meltupExits.tranches.forEach((t, i) => {
-                    report += `  ${i + 1}. ${t.shares} shares @ ${t.trigger} (${t.reason})\n`;
-                });
-            });
-        }
-
-        // Pool Summary
-        report += `\n\n═══ POOL SUMMARY ═══\n`;
-        report += `Total Pool: $${plan.global.totalPool.toLocaleString()}\n`;
-        report += `Deployed: $${plan.global.deployedValue.toLocaleString()} (${((plan.global.deployedValue / plan.global.totalPool) * 100).toFixed(1)}%)\n`;
-        report += `Dry Powder: $${plan.global.dryPowder.toLocaleString()} (${((plan.global.dryPowder / plan.global.totalPool) * 100).toFixed(1)}%)\n`;
-
-        return report;
-    }
-
-    // ============================================================
-    // INTEGRATION METHODS (for existing UI)
-    // ============================================================
 
     getUserState() {
         const input = document.getElementById('portfolioInput');
@@ -2752,406 +1467,399 @@ class AntigravityAllocatorV10 {
         }
     }
 
-    constructInputState(dataMap) {
-        // Build input from dataMap - handles BOTH daily allocator and backtest structures
-        const input = {
-            cash_available: this.cashAvailable,
-            assets: {},
-            macro: {
-                spx: { level: 0, drawdown: 0 },
-                nasdaq: { level: 0, drawdown: 0 },
-                vix: 15,
-                hySpread: 300,
-                payrolls: 'flat',
-                unemployment: { rate: 4.0, change3m: 0 },
-                ism: 50,
-                btc: { drawdown: 0 },
-                gold: { vsHigh: 0 }
-            }
-        };
-
-        // v10: Parse Macro Inputs from User JSON
-        if (this.userState.macro) {
-            input.macro = { ...input.macro, ...this.userState.macro };
-        } else {
-            console.warn('[Allocator] No macro data found in input JSON. Using defaults (RECOVERY).');
-        }
-
-        // Determine data structure type by checking first ticker
-        const firstTicker = Object.keys(dataMap)[0];
-        const firstData = dataMap[firstTicker];
-        const isBacktestData = Array.isArray(firstData) && firstData[0] && firstData[0].close !== undefined;
-
-        // Process tickers in our universe + SPY (needed for global regime analysis)
-        const allTickers = [...this.assets, ...this.monitorOnly, 'SPY'];
-
-        allTickers.forEach(ticker => {
-            const data = dataMap[ticker];
-            if (!data) {
-                console.warn(`[Allocator] No data for ${ticker}`);
-                return;
-            }
-
-            let price, rsi, sma200, ema20, volume, volumeAvg20, drawdown60d;
-
-            if (isBacktestData) {
-                // BACKTEST STRUCTURE: Array of {date, close, rsi, sma200, etc}
-                if (data.length === 0) return;
-                const latest = data[data.length - 1];
-
-                if (!latest || !latest.close) {
-                    console.warn(`[Allocator] Skipping ${ticker}: missing price data in backtest`);
-                    return;
-                }
-
-                price = latest.close;
-                rsi = latest.rsi || 50;
-                sma200 = latest.sma200 || latest.close;
-                ema20 = latest.ema20 || latest.close;
-                volume = latest.volume || 1000000;
-                volumeAvg20 = latest.volumeAvg20 || volume;
-
-                // Calculate drawdown from 60-day high
-                const priceHistory = data.map(d => d.close);
-                drawdown60d = this.calculateDrawdown(priceHistory, price);
-            } else {
-                // DAILY ALLOCATOR STRUCTURE: {indicators: {quote: [{close: [...], high: [...]}]}}
-                if (!data.indicators || !data.indicators.quote || !data.indicators.quote[0]) {
-                    console.warn(`[Allocator] Skipping ${ticker}: invalid data structure`);
-                    return;
-                }
-
-                const quote = data.indicators.quote[0];
-                const closes = quote.close.filter(c => c !== null);
-                const volumes = quote.volume.filter(v => v !== null);
-
-                if (closes.length === 0) {
-                    console.warn(`[Allocator] Skipping ${ticker}: no price data`);
-                    return;
-                }
-
-                price = closes[closes.length - 1];
-
-                // Calculate indicators
-                if (closes.length > 200) {
-                    const rsiSeries = calculateRSI(closes);
-                    rsi = rsiSeries[rsiSeries.length - 1];
-                    sma200 = calculateSMA(closes, 200);
-                    ema20 = calculateSMA(closes, 20); // Use SMA as proxy for EMA
-                } else {
-                    rsi = 50;
-                    sma200 = price;
-                    ema20 = price;
-                }
-
-                // Volume metrics
-                if (volumes.length > 20) {
-                    volume = volumes[volumes.length - 1];
-                    volumeAvg20 = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
-                } else {
-                    volume = 1000000;
-                    volumeAvg20 = 1000000;
-                }
-
-                // Calculate drawdown from 60-day high
-                drawdown60d = this.calculateDrawdown(closes, price);
-            }
-
-            const rawHolding = this.userState.holdings[ticker];
-            const shares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
-
-            console.log(`[Allocator] ${ticker}: RawHolding=`, rawHolding, `Shares=${shares}`);
-
-            input.assets[ticker] = {
-                ticker,
-                price: price || 0,
-                position_shares: shares,
-                position_value: shares * (price || 0),
-                pending_orders: this.userState.limits[ticker] || [],
-                indicators: {
-                    rsi,
-                    sma200,
-                    ema20,
-                    volume,
-                    volumeAvg20,
-                    drawdown60d  // v9.3: NEW
-                }
-            };
-        });
-
-        return input;
-    }
-
-    // ============================================================
-    // MACRO CONSOLE (v10)
-    // ============================================================
-
-    initMacroConsole() {
-        // Auto-detect function
-        const runDetection = () => {
-            // 1. Gather Inputs from UI
-            const inputs = {
-                spx: {
-                    drawdown: parseFloat(document.getElementById('macro-spx-dd')?.value) || 0
-                },
-                nasdaq: {
-                    drawdown: parseFloat(document.getElementById('macro-ndx-dd')?.value) || 0
-                },
-                vix: parseFloat(document.getElementById('macro-vix')?.value) || 15,
-                hySpread: parseFloat(document.getElementById('macro-hy')?.value) || 300,
-                payrolls: 'flat',
-                unemployment: {
-                    rate: parseFloat(document.getElementById('macro-ue')?.value) || 4.0,
-                    change3m: 0
-                },
-                ism: 50,
-                btc: { drawdown: 0 },
-                gold: { vsHigh: 0 }
-            };
-
-            // 2. Detect Phase
-            const result = this.macroRegime.detectPhase(inputs);
-
-            // 3. Color coding based on phase
-            let bgColor = '#333';
-            let textColor = '#ccc';
-            if (result.phase === 'STRUCTURAL RESET') {
-                bgColor = '#f44336';
-                textColor = '#fff';
-            } else if (result.phase === 'MINI-RESET') {
-                bgColor = '#ff9800';
-                textColor = '#000';
-            } else if (result.phase === 'MELTUP') {
-                bgColor = '#00e676';
-                textColor = '#000';
-            } else if (result.phase === 'COMPRESSION') {
-                bgColor = '#2196f3';
-                textColor = '#fff';
-            } else if (result.phase === 'RECOVERY' || result.phase === 'BOTTOMING') {
-                bgColor = '#4caf50';
-                textColor = '#fff';
-            }
-
-            // 4. Update Top Badge (next to Live Analysis)
-            const badge = document.getElementById('macroPhaseBadgeTop');
-            if (badge) {
-                badge.textContent = result.phase;
-                badge.style.background = bgColor;
-                badge.style.color = textColor;
-            }
-
-            // 5. Update inline output
-            const output = document.getElementById('macroOutput');
-            if (output) {
-                output.innerHTML = `<span style="color: ${bgColor}; font-weight: bold;">${result.stance}</span>`;
-            }
-
-            // 6. Store result globally
-            window.lastMacroResult = result;
-            this.updateLiveAnalysisWithMacro(result);
-        };
-
-        // Run on page load
-        runDetection();
-
-        // Run on any input change
-        ['macro-spx-dd', 'macro-vix', 'macro-hy', 'macro-ue'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) {
-                el.addEventListener('input', runDetection);
-            }
-        });
-    }
-
-    updateLiveAnalysisWithMacro(macroResult) {
-        const commentaryEl = document.getElementById('commentaryText');
-        if (!commentaryEl) return;
-
-        // Prepend macro context to existing commentary
-        const existingText = commentaryEl.textContent || '';
-
-        // Build macro-aware analysis
-        let macroContext = '';
-        if (macroResult.phase === 'MINI-RESET') {
-            macroContext = `🟠 MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
-        } else if (macroResult.phase === 'STRUCTURAL RESET') {
-            macroContext = `🔴 MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
-        } else if (macroResult.phase === 'MELTUP') {
-            macroContext = `🟢 MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
-        } else {
-            macroContext = `⚪ MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
-        }
-
-        // Only add if not already present
-        if (!existingText.includes('MACRO:')) {
-            commentaryEl.textContent = macroContext + existingText;
-        }
-    }
-
     runDailyCycle(dataMap) {
-        // Get user state
+        // 0. GET USER STATE FROM UI
         const customState = this.getUserState();
         if (customState) {
+            console.log("Using custom portfolio state from UI");
             this.cashAvailable = customState.cash !== undefined ? customState.cash : 0;
             this.userState = {
                 holdings: customState.holdings || {},
                 limits: customState.limits || {},
-                blacklist: customState.blacklist || {},
-                rejectedRungs: customState.rejectedRungs || {}
+                blacklist: customState.blacklist || {}
             };
         }
 
-        // Construct input
+        // 1. CONSTRUCT INPUT STATE
         const input = this.constructInputState(dataMap);
 
-        // Generate plan
+        // 2. GENERATE GLOBAL POOL PLAN
         const plan = this.generateGlobalPoolPlan(input);
         this.lastPlan = plan;
 
-        // Render
+        // 3. RENDER OUTPUT
         const report = this.renderReport(input, plan);
 
         // Display
         const outputEl = document.getElementById('allocatorOutput');
         if (outputEl) outputEl.textContent = report;
 
-        return plan;
+        // Enable Confirm Button
+        const confirmBtn = document.getElementById('confirmChangesBtn');
+        if (confirmBtn) {
+            let hasChanges = Object.values(plan.assetPlans).some(p =>
+                p.coreBuy || p.ladder.some(r => r.status !== 'KEEP')
+            );
+            confirmBtn.disabled = !hasChanges;
+            confirmBtn.style.background = hasChanges ? 'var(--accent)' : '#333';
+            confirmBtn.style.cursor = hasChanges ? 'pointer' : 'not-allowed';
+        }
     }
 
-    commitChanges() {
-        if (!this.lastPlan) {
-            alert("No plan to commit");
-            return;
-        }
+    constructInputState(dataMap) {
+        const assets = {};
+        let holdingsValue = 0;
+        let pendingCost = 0;
 
-        const inputEl = document.getElementById('portfolioInput');
-        if (!inputEl) return;
+        this.assets.forEach(ticker => {
+            const data = dataMap[ticker];
+            if (!data) return;
 
-        let state;
-        try {
-            state = JSON.parse(inputEl.value);
-        } catch (e) {
-            alert("Invalid JSON in portfolio input");
-            return;
-        }
+            const closes = data.indicators.quote[0].close.filter(c => c !== null);
+            const price = closes.length > 0 ? closes[closes.length - 1] : 0;
 
-        // Initialize if missing
-        if (!state.holdings) state.holdings = {};
-        if (!state.limits) state.limits = {};
-        if (state.cash === undefined) state.cash = 100000;
+            let positionValue = 0;
+            let positionShares = 0;
+            const holding = this.userState.holdings[ticker];
 
-        let log = [];
+            if (holding && typeof holding === 'object' && holding.shares !== undefined) {
+                positionShares = holding.shares;
+                positionValue = positionShares * price;
+            } else {
+                positionValue = holding || 0;
+                positionShares = price > 0 ? Math.floor(positionValue / price) : 0;
+            }
 
-        // Process Plan
-        Object.values(this.lastPlan.assetPlans).forEach(plan => {
-            const ticker = plan.ticker;
+            const orders = this.userState.limits[ticker] || [];
+            let assetPendingCost = 0;
+            orders.forEach(o => assetPendingCost += o.price * o.size);
 
-            // 1. Handle Trims/Exits (Immediate Execution)
-            if (plan.action === 'EXIT' || (plan.coreTrim && plan.coreTrim.shares > 0)) {
-                const rawHolding = state.holdings[ticker];
-                const currentShares = (typeof rawHolding === 'object' && rawHolding !== null) ? (rawHolding.shares || 0) : (Number(rawHolding) || 0);
+            // Calculate Indicators
+            let rsi = 50;
+            let sma200 = 0;
+            let volSurge = false;
 
-                let sharesToSell = 0;
+            if (closes.length > 200) {
+                const rsiSeries = calculateRSI(closes);
+                rsi = rsiSeries[rsiSeries.length - 1];
+                sma200 = calculateSMA(closes, 200);
 
-                if (plan.action === 'EXIT') {
-                    sharesToSell = currentShares;
-                } else if (plan.coreTrim) {
-                    sharesToSell = plan.coreTrim.shares;
-                }
-
-                if (sharesToSell > 0) {
-                    const newShares = Math.max(0, currentShares - sharesToSell);
-
-                    // Update state preserving structure
-                    if (typeof rawHolding === 'object' && rawHolding !== null) {
-                        state.holdings[ticker].shares = newShares;
-                    } else {
-                        state.holdings[ticker] = newShares;
-                    }
-
-                    log.push(`SOLD ${sharesToSell} ${ticker} (Update Cash Manually)`);
+                const vols = data.indicators.quote[0].volume.filter(v => v !== null);
+                if (vols.length > 20) {
+                    const currentVol = vols[vols.length - 1];
+                    const avgVol = vols.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
+                    if (currentVol > avgVol * 2) volSurge = true;
                 }
             }
 
-            // 2. Handle Ladder (Limits)
-            if (!state.limits[ticker]) state.limits[ticker] = [];
-
-            // Remove CANCELs
-            const cancels = plan.ladder.filter(r => r.status === 'CANCEL');
-            cancels.forEach(c => {
-                const idx = state.limits[ticker].findIndex(l => Math.abs(l.price - c.price) < 0.01 && l.size === c.shares);
-                if (idx !== -1) {
-                    state.limits[ticker].splice(idx, 1);
-                    // Add cash back? 
-                    // state.cash += c.price * c.shares; 
-                    log.push(`CANCELLED ${ticker} ${c.shares} @ $${c.price}`);
+            assets[ticker] = {
+                ticker,
+                price,
+                position_shares: positionShares,
+                position_value: positionValue,
+                pending_orders: orders.map(o => ({ ...o, type: 'buy_limit' })),
+                pending_cost: assetPendingCost,
+                weight: 0,
+                indicators: {
+                    rsi,
+                    sma200,
+                    priceToSMA200: sma200 > 0 ? (price / sma200) : 1,
+                    volSurge
                 }
-            });
+            };
 
-            // Add NEWs
-            const newRungs = plan.ladder.filter(r => r.status === 'NEW');
-            newRungs.forEach(r => {
-                state.limits[ticker].push({
-                    price: r.price,
-                    size: r.shares,
-                    note: r.reason
-                });
-                // Deduct cash?
-                // state.cash -= r.price * r.shares;
-                log.push(`ADDED ${ticker} ${r.shares} @ $${r.price}`);
-            });
+            pendingCost += assetPendingCost;
+            holdingsValue += positionValue;
         });
 
-        // Update UI
-        inputEl.value = JSON.stringify(state, null, 4);
+        const totalEquity = holdingsValue + this.cashAvailable + pendingCost;
+        Object.values(assets).forEach(a => {
+            a.weight = totalEquity > 0 ? (a.position_value / totalEquity) : 0;
+        });
 
-        // Feedback
-        if (log.length > 0) {
-            alert(`Committed Changes:\n${log.join('\n')}\n\nJSON updated. Please review cash balance.`);
-        } else {
-            alert("No changes to commit.");
+        const regimeData = this.analyzeRegime(dataMap);
+
+        return {
+            date: new Date().toISOString().split('T')[0],
+            total_equity: totalEquity,
+            cash_available: this.cashAvailable,
+            pending_cost_start: pendingCost,
+            assets,
+            regime: regimeData
+        };
+    }
+
+    // --- 1. MARKET REGIME ANALYSIS ---
+    analyzeRegime(dataMap) {
+        let phase = 'ACCUMULATION';
+        let score = 50;
+        let explanation = 'Normal market conditions';
+        let ignition = false;
+
+        try {
+            const spy = dataMap['SPY'];
+            if (spy && spy.indicators && spy.indicators.quote[0].close) {
+                const closes = spy.indicators.quote[0].close.filter(c => c !== null);
+                if (closes.length > 50) {
+                    const rsiSeries = calculateRSI(closes);
+                    const globalRSI = rsiSeries[rsiSeries.length - 1];
+                    const sma20 = calculateSMA(closes, 20);
+                    const sma50 = calculateSMA(closes, 50);
+                    const current = closes[closes.length - 1];
+
+                    const vols = spy.indicators.quote[0].volume.filter(v => v !== null);
+                    const avgVol = vols.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
+                    const currentVol = vols[vols.length - 1];
+                    const volSurge = currentVol > avgVol * 1.5;
+
+                    if (current < sma50 && globalRSI < 45) {
+                        phase = 'RESET';
+                        score = 20;
+                        explanation = `SPY price $${current.toFixed(2)} is below SMA50 $${sma50.toFixed(2)}, SPY RSI ${globalRSI.toFixed(1)} is weak`;
+                    } else if (globalRSI > 72 && current > sma20 * 1.05) {
+                        phase = 'MELTUP';
+                        score = 90;
+                        explanation = `SPY RSI ${globalRSI.toFixed(1)} > 72, price ${((current / sma20 - 1) * 100).toFixed(1)}% above SMA20`;
+                        ignition = true;
+                    } else if (globalRSI > 60 && current > sma20 && volSurge) {
+                        phase = 'IGNITION';
+                        score = 75;
+                        explanation = `SPY RSI ${globalRSI.toFixed(1)} > 60, above SMA20, volume surge ${((currentVol / avgVol - 1) * 100).toFixed(0)}%`;
+                        ignition = true;
+                    } else if (globalRSI > 55 && current > sma20) {
+                        phase = 'PRE-IGNITION';
+                        score = 65;
+                        explanation = `SPY RSI ${globalRSI.toFixed(1)} rising, price above SMA20`;
+                    } else {
+                        explanation = `SPY RSI ${globalRSI.toFixed(1)}, normal accumulation conditions`;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Regime analysis failed:", e);
         }
+
+        return { phase, score, explanation, ignition };
+    }
+
+    checkBlacklist(ticker, price) {
+        const blacklist = this.userState.blacklist || {};
+        const ranges = blacklist[ticker] || [];
+        for (const range of ranges) {
+            if (price >= range.low && price <= range.high) {
+                return range.reason || 'Blacklisted';
+            }
+        }
+        return null;
+    }
+
+    // --- 2. CORE ALLOCATION LOGIC ---
+    generateGlobalPoolPlan(input) {
+        const plan = {
+            assetPlans: {},
+            global: {
+                initialCash: input.cash_available,
+                phase: input.regime.phase,
+                phaseScore: input.regime.score,
+                explanation: input.regime.explanation,
+                finalPool: 0
+            },
+            blacklistSummary: this.userState.blacklist || {}
+        };
+
+        let globalPool = input.cash_available;
+        const phase = input.regime.phase;
+
+        // --- PROCESS EACH ASSET ---
+        Object.values(input.assets).forEach(asset => {
+            const assetPlan = {
+                ticker: asset.ticker,
+                action: 'HOLD',
+                coreBuy: null,
+                ladder: [],
+                position: {
+                    shares: asset.position_shares,
+                    value: asset.position_value
+                }
+            };
+
+            // GOOG: Monitor Only
+            if (asset.ticker === 'GOOG') {
+                assetPlan.action = 'MONITOR (BAN)';
+                const exit = this.checkExitSignals(asset, phase);
+                if (exit.action !== 'HOLD') {
+                    assetPlan.coreBuy = `Trim ${Math.floor(exit.pct * 100)}% (${exit.reason})`;
+                }
+                plan.assetPlans[asset.ticker] = assetPlan;
+                return;
+            }
+
+            // MELTUP TRIMS
+            if (phase === 'MELTUP' || asset.indicators.rsi > 72) {
+                const exit = this.checkExitSignals(asset, phase);
+                if (exit.action === 'TRIM') {
+                    assetPlan.action = 'TRIM';
+                    const trimShares = Math.floor(asset.position_shares * exit.pct);
+                    if (trimShares > 0) {
+                        assetPlan.coreBuy = `Sell ${trimShares} @ Market (${exit.reason})`;
+                        globalPool += trimShares * asset.price;
+                    }
+                }
+            }
+
+            // RESET EXITS (except BTC)
+            if (phase === 'RESET' && asset.ticker !== 'BTC-USD') {
+                if (asset.price < asset.indicators.sma200) {
+                    assetPlan.action = 'EXIT';
+                    assetPlan.coreBuy = 'Exit (SMA200 Breakdown)';
+                }
+            }
+
+            // LADDER GENERATION FROM EXISTING ORDERS
+            asset.pending_orders.forEach(order => {
+                const price = order.price;
+                const size = order.size;
+                let status = 'KEEP';
+                let reason = 'Active';
+
+                // Check Blacklist
+                const blacklistReason = this.checkBlacklist(asset.ticker, price);
+                if (blacklistReason) {
+                    status = 'BLACKLISTED';
+                    reason = blacklistReason;
+                    globalPool += price * size;
+                    assetPlan.ladder.push({ price, shares: size, status, reason });
+                    return;
+                }
+
+                // Phase Rules
+                const distPct = ((asset.price - price) / asset.price) * 100;
+
+                if (phase === 'IGNITION') {
+                    if (distPct > 15) {
+                        status = 'CANCEL';
+                        reason = 'Ignition: Too Deep';
+                        globalPool += price * size;
+                    }
+                } else if (phase === 'ACCUMULATION') {
+                    if (distPct > 25) {
+                        status = 'CANCEL';
+                        reason = 'Low Conviction Deep';
+                        globalPool += price * size;
+                    }
+                } else if (phase === 'RESET' && asset.ticker === 'BTC-USD') {
+                    status = 'KEEP';
+                    reason = 'BTC Reset Accumulation';
+                } else if (phase === 'MELTUP' && asset.ticker === 'BTC-USD') {
+                    status = 'CANCEL';
+                    reason = 'BTC: Stop Buying in Meltup';
+                    globalPool += price * size;
+                }
+
+                assetPlan.ladder.push({ price, shares: size, status, reason });
+            });
+
+            plan.assetPlans[asset.ticker] = assetPlan;
+        });
+
+        plan.global.finalPool = globalPool;
+        return plan;
+    }
+
+    calculateFillProbability(distPct) {
+        if (distPct < 5) return 80;
+        if (distPct < 10) return 60;
+        if (distPct < 20) return 30;
+        return 5;
+    }
+
+    checkExitSignals(asset, phase) {
+        const { rsi, priceToSMA200 } = asset.indicators;
+
+        if (rsi > 85) return { action: 'TRIM', pct: 0.3, reason: 'RSI > 85' };
+        if (rsi > 78) return { action: 'TRIM', pct: 0.2, reason: 'RSI > 78' };
+        if (rsi > 72 && priceToSMA200 > 1.2) return { action: 'TRIM', pct: 0.1, reason: 'RSI > 72 + Extended' };
+
+        return { action: 'HOLD', pct: 0, reason: '' };
+    }
+
+    renderReport(input, plan) {
+        let report = `=== RAW ARC ALLOCATOR ENGINE ===\n\n`;
+
+        // 1. DETECTED PHASE
+        report += `1. DETECTED PHASE\n`;
+        report += `   ${plan.global.phase}\n`;
+        report += `   Phase Score: ${plan.global.phaseScore}\n`;
+        report += `   Explanation: ${plan.global.explanation}\n\n`;
+
+        // 2. ACTION SUMMARY
+        report += `2. ACTION SUMMARY\n`;
+        Object.values(plan.assetPlans).forEach(p => {
+            const actionText = p.coreBuy ? `${p.action} (${p.coreBuy})` : p.action;
+            report += `   ${p.ticker}: ${actionText}\n`;
+        });
+        report += `\n`;
+
+        // 3. CORE HOLDINGS
+        report += `3. CORE HOLDINGS\n`;
+        Object.values(input.assets).forEach(a => {
+            const p = plan.assetPlans[a.ticker];
+            report += `   ${a.ticker}:\n`;
+            report += `      Qty: ${a.position_shares} | Value: $${Math.floor(a.position_value).toLocaleString()}\n`;
+            report += `      RSI: ${a.indicators.rsi.toFixed(1)} | Price/SMA200: ${a.indicators.priceToSMA200.toFixed(2)}\n`;
+            report += `      Action: ${p.action}\n`;
+        });
+        report += `\n`;
+
+        // 4. LIMIT LADDERS
+        report += `4. LIMIT LADDERS (PER TICKER)\n`;
+        Object.values(plan.assetPlans).forEach(p => {
+            if (p.ladder && p.ladder.length > 0) {
+                report += `   ${p.ticker} LADDER:\n`;
+                p.ladder.forEach(rung => {
+                    const prob = this.calculateFillProbability(((input.assets[p.ticker].price - rung.price) / input.assets[p.ticker].price) * 100);
+                    report += `      $${rung.price.toFixed(2)} | ${rung.shares} shares | Prob: ${prob}% | Status: ${rung.status} (${rung.reason})\n`;
+                });
+                report += `\n`;
+            }
+        });
+
+        // 8. BLACKLIST SUMMARY
+        report += `8. BLACKLIST SUMMARY\n`;
+        if (Object.keys(plan.blacklistSummary).length > 0) {
+            Object.entries(plan.blacklistSummary).forEach(([ticker, ranges]) => {
+                const rangeStr = ranges.map(r => `${r.low.toFixed(0)}-${r.high.toFixed(0)} (${r.reason})`).join(', ');
+                report += `   ${ticker}: ${rangeStr}\n`;
+            });
+        } else {
+            report += `   None\n`;
+        }
+
+        report += `\nFINAL POOL: $${Math.floor(plan.global.finalPool).toLocaleString()}\n`;
+        return report;
+    }
+
+    commitChanges() {
+        if (!this.lastPlan) return;
+        console.log("Committing changes...");
+        alert("Commit functionality not yet implemented. Use report as guide for manual execution.");
     }
 }
 
-// Initialize Allocator
-const allocator = new AntigravityAllocatorV10();
+const rawArcAllocator = new RawArcAllocator();
 
 // Initialize Button
 document.addEventListener('DOMContentLoaded', () => {
-    allocator.initMacroConsole(); // v10: Init Macro Console
-
-    // Initial Run (if marketData is available immediately)
-    if (window.marketData) {
-        allocator.runDailyCycle(window.marketData);
-    }
-
-    // Load saved portfolio state from localStorage
-    const portfolioInput = document.getElementById('portfolioInput');
-    if (portfolioInput) {
-        const savedState = localStorage.getItem('portfolioState');
-        if (savedState) {
-            portfolioInput.value = savedState;
-            console.log('[Storage] Loaded portfolio state from localStorage');
-        }
-
-        // Save to localStorage on change
-        portfolioInput.addEventListener('input', () => {
-            localStorage.setItem('portfolioState', portfolioInput.value);
-            console.log('[Storage] Saved portfolio state to localStorage');
-        });
-    }
-
     document.getElementById('runAllocatorBtn').addEventListener('click', () => {
         if (!window.marketDataCache) {
             alert("Market data not ready yet. Please wait...");
             return;
         }
-        allocator.runDailyCycle(window.marketDataCache);
+        rawArcAllocator.runDailyCycle(window.marketDataCache);
     });
 
     document.getElementById('confirmChangesBtn').addEventListener('click', () => {
-        allocator.commitChanges();
+        rawArcAllocator.commitChanges();
     });
 });
 
@@ -4315,20 +3023,14 @@ const initSimulationControls = () => {
 
             try {
                 // Initialize Engine with current allocator
-                // Ensure allocator is available globally
-                if (typeof allocator === 'undefined') {
+                // Ensure rawArcAllocator is available globally
+                if (typeof rawArcAllocator === 'undefined') {
                     console.error("Allocator not initialized");
                     alert("Allocator not initialized");
                     return;
                 }
 
-                if (typeof BacktestEngine === 'undefined') {
-                    console.error("BacktestEngine not loaded");
-                    alert("Backtest Engine not loaded. Please use debug.html for backtesting.");
-                    return;
-                }
-
-                const engine = new BacktestEngine(allocator);
+                const engine = new BacktestEngine(rawArcAllocator);
 
                 // Run Backtest
                 await engine.run(scenario.tickers, 100000, scenario.start, scenario.end);

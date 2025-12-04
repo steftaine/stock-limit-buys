@@ -1450,7 +1450,94 @@ const stockMeltupExit = new StockMeltupExit();
  * proactive RESET trimming, and automatic dip generation
  */
 
-class AntigravityAllocatorV92 {
+// === ANTIGRAVITY v10 MACRO ENGINE ===
+
+class MacroRegime {
+    constructor() {
+        this.PHASES = {
+            COMPRESSION: 'COMPRESSION',
+            MELTUP: 'MELTUP',
+            MINI_RESET: 'MINI-RESET',
+            STRUCTURAL_RESET: 'STRUCTURAL RESET',
+            BOTTOMING: 'BOTTOMING',
+            RECOVERY: 'RECOVERY'
+        };
+    }
+
+    detectPhase(inputs) {
+        const { spx, nasdaq, vix, hySpread, payrolls, unemployment, ism, btc, gold } = inputs;
+
+        // 1. STRUCTURAL RESET (Crash)
+        // SPX -40%+, VIX > 50, HY Spread > 600bps (approx +250 from tights), Unemployment spiking
+        const isStructuralCrash = (
+            (spx.drawdown < -35 || nasdaq.drawdown < -40) &&
+            (vix > 45 || hySpread > 550)
+        );
+
+        if (isStructuralCrash) {
+            return {
+                phase: this.PHASES.STRUCTURAL_RESET,
+                reason: `CRASH DETECTED: SPX ${spx.drawdown}%, VIX ${vix}, HY Spread ${hySpread}bps`,
+                stance: 'PROTECT CAPITAL. Allow deep trims/exits. Cancel deep ladders.'
+            };
+        }
+
+        // 2. MINI-RESET (Shakeout)
+        // SPX -15-25%, VIX 25-45, HY Spread +50-150bps (approx 350-450 total)
+        const isMiniReset = (
+            (spx.drawdown <= -10 && spx.drawdown > -35) &&
+            (vix >= 22 || hySpread >= 350)
+        );
+
+        if (isMiniReset) {
+            return {
+                phase: this.PHASES.MINI_RESET,
+                reason: `SHAKEOUT: SPX ${spx.drawdown}%, VIX ${vix}. Not a structural crash.`,
+                stance: 'BUY DIPS. Do NOT panic sell. Maintain core. Activate ladders.'
+            };
+        }
+
+        // 3. MELTUP
+        // SPX near highs, VIX < 18, Breadth strong
+        const isMeltup = (
+            spx.drawdown > -3 &&
+            vix < 18 &&
+            hySpread < 300
+        );
+
+        if (isMeltup) {
+            return {
+                phase: this.PHASES.MELTUP,
+                reason: `MELTUP: SPX near highs, VIX ${vix} (complacent), Credit tight.`,
+                stance: 'RIDE TREND. Hold core. Trim into extreme extensions only.'
+            };
+        }
+
+        // 4. COMPRESSION
+        // SPX within 10% of high, VIX 12-20, boring
+        const isCompression = (
+            spx.drawdown >= -10 &&
+            vix <= 22
+        );
+
+        if (isCompression) {
+            return {
+                phase: this.PHASES.COMPRESSION,
+                reason: `COMPRESSION: SPX ${spx.drawdown}%, VIX ${vix}. Market coiling.`,
+                stance: 'ACCUMULATE. Build positions before the next move.'
+            };
+        }
+
+        // Default / Recovery
+        return {
+            phase: this.PHASES.RECOVERY,
+            reason: 'RECOVERY/NORMAL: No extreme signals detected.',
+            stance: 'TRADE NORMAL. Follow asset-specific signals.'
+        };
+    }
+}
+
+class AntigravityAllocatorV10 {
     constructor() {
         this.assets = ['META', 'MSFT', 'NVDA', 'SMCI', 'BTC-USD'];
         this.monitorOnly = ['GOOG']; // Monitor but never buy
@@ -1469,6 +1556,9 @@ class AntigravityAllocatorV92 {
 
         // SMCI-specific tracking
         this.smciBannedZones = []; // Array of {min, max, reason, addedAt}
+
+        // v10: Macro Engine
+        this.macroRegime = new MacroRegime();
     }
 
     // ============================================================
@@ -2093,7 +2183,7 @@ class AntigravityAllocatorV92 {
     // ACTION LOGIC PER PHASE
     // ============================================================
 
-    getPhaseAction(asset, regime, dryPowder, totalPool) {
+    getPhaseAction(asset, regime, dryPowder, totalPool, macroPhase) {
         const { ticker, position_shares, position_value, pending_orders } = asset;
         const { phase } = regime;
 
@@ -2112,20 +2202,59 @@ class AntigravityAllocatorV92 {
             return action;
         }
 
+        // v10: MACRO OVERRIDES
+        if (macroPhase) {
+            // 1. MINI-RESET: Force HOLD, Block Panic Exits
+            if (macroPhase.phase === 'MINI-RESET') {
+                // If asset signals CATASTROPHIC/RESET during a known shakeout, ignore the panic signal
+                // UNLESS it's a specific asset breakdown (e.g. SMCI fraud) - handled by asset specific logic later?
+                // For now, we apply a blanket "Don't Panic" rule for general market stress
+                if (phase === 'CATASTROPHIC' || phase === 'RESET') {
+                    console.log(`[Allocator] MACRO OVERRIDE: Blocking ${phase} exit due to MINI-RESET`);
+                    // We will proceed to generate dip rungs instead of exiting
+                    // But we must ensure we don't return early with an EXIT action below
+                }
+            }
+        }
+
         // CATASTROPHIC: Full exit
         if (phase === 'CATASTROPHIC') {
-            action.coreAction = 'EXIT';
-            action.coreTrim = {
-                shares: position_shares,
-                reason: 'Catastrophic breakdown - Full exit'
-            };
-            // Cancel all pending orders
-            action.modifiedRungs = pending_orders.map(o => ({
-                ...o,
-                status: 'CANCEL',
-                reason: 'Catastrophic phase - Cancel all'
-            }));
-            return action;
+            // v10: Check for Macro Override
+            if (macroPhase && macroPhase.phase === 'MINI-RESET') {
+                // Downgrade to NORMAL/RESET to allow dip buying instead of exit
+                // Unless it's SMCI (handled separately)
+                if (ticker !== 'SMCI') {
+                    // Fall through to normal logic
+                } else {
+                    // SMCI Catastrophic is likely real (fraud/accounting), respect it
+                    action.coreAction = 'EXIT';
+                    action.coreTrim = {
+                        shares: position_shares,
+                        reason: 'Catastrophic breakdown - Full exit'
+                    };
+                    // Cancel all pending orders
+                    action.modifiedRungs = pending_orders.map(o => ({
+                        ...o,
+                        status: 'CANCEL',
+                        reason: 'Catastrophic phase - Cancel all'
+                    }));
+                    return action;
+                }
+            } else {
+                // Standard CATASTROPHIC logic
+                action.coreAction = 'EXIT';
+                action.coreTrim = {
+                    shares: position_shares,
+                    reason: 'Catastrophic breakdown - Full exit'
+                };
+                // Cancel all pending orders
+                action.modifiedRungs = pending_orders.map(o => ({
+                    ...o,
+                    status: 'CANCEL',
+                    reason: 'Catastrophic phase - Cancel all'
+                }));
+                return action;
+            }
         }
 
         // Detect asset type for type-specific actions
@@ -2440,11 +2569,16 @@ class AntigravityAllocatorV92 {
                 deployedValue: 0,
                 dryPowder: input.cash_available,
                 regime: null,
-                spyRegime: null  // v9.3: Global market regime
+                spyRegime: null,
+                macro: null // v10: Macro Phase
             },
             rejectedRungs: [],
             summary: ''
         };
+
+        // v10: Detect Global Macro Phase
+        const macroPhase = this.macroRegime.detectPhase(input.macro);
+        plan.global.macro = macroPhase;
 
         // v9.3: Analyze global market regime using SPY
         const spyAsset = input.assets['SPY'];
@@ -2459,7 +2593,8 @@ class AntigravityAllocatorV92 {
         Object.values(input.assets).forEach(asset => {
             // v9.3: Pass globalRegime to detectPhase for gating
             const regime = this.detectPhase(asset, globalRegime);
-            const action = this.getPhaseAction(asset, regime, dryPowder, input.cash_available);
+            // v10: Pass macroPhase to getPhaseAction for overrides
+            const action = this.getPhaseAction(asset, regime, dryPowder, input.cash_available, macroPhase);
 
             const assetPlan = {
                 ticker: asset.ticker,
@@ -2518,8 +2653,17 @@ class AntigravityAllocatorV92 {
 
     renderReport(input, plan) {
         let report = `╔═══════════════════════════════════════╗\n`;
-        report += `║  ANTIGRAVITY v9.2 ALLOCATOR ENGINE  ║\n`;
+        report += `║  ANTIGRAVITY v10 MACRO ENGINE       ║\n`;
         report += `╚═══════════════════════════════════════╝\n\n`;
+
+        // v10: Global Macro Phase Block
+        if (plan.global.macro) {
+            const m = plan.global.macro;
+            report += `═══ GLOBAL MACRO PHASE ═══\n`;
+            report += `PHASE: ${m.phase}\n`;
+            report += `Reason: ${m.reason}\n`;
+            report += `Stance: ${m.stance}\n\n`;
+        }
 
         // Regime Summary
         report += `═══ REGIME SUMMARY ═══\n`;
@@ -2612,8 +2756,26 @@ class AntigravityAllocatorV92 {
         // Build input from dataMap - handles BOTH daily allocator and backtest structures
         const input = {
             cash_available: this.cashAvailable,
-            assets: {}
+            assets: {},
+            macro: {
+                spx: { level: 0, drawdown: 0 },
+                nasdaq: { level: 0, drawdown: 0 },
+                vix: 15,
+                hySpread: 300,
+                payrolls: 'flat',
+                unemployment: { rate: 4.0, change3m: 0 },
+                ism: 50,
+                btc: { drawdown: 0 },
+                gold: { vsHigh: 0 }
+            }
         };
+
+        // v10: Parse Macro Inputs from User JSON
+        if (this.userState.macro) {
+            input.macro = { ...input.macro, ...this.userState.macro };
+        } else {
+            console.warn('[Allocator] No macro data found in input JSON. Using defaults (RECOVERY).');
+        }
 
         // Determine data structure type by checking first ticker
         const firstTicker = Object.keys(dataMap)[0];
@@ -2718,6 +2880,112 @@ class AntigravityAllocatorV92 {
         });
 
         return input;
+    }
+
+    // ============================================================
+    // MACRO CONSOLE (v10)
+    // ============================================================
+
+    initMacroConsole() {
+        // Auto-detect function
+        const runDetection = () => {
+            // 1. Gather Inputs from UI
+            const inputs = {
+                spx: {
+                    drawdown: parseFloat(document.getElementById('macro-spx-dd')?.value) || 0
+                },
+                nasdaq: {
+                    drawdown: parseFloat(document.getElementById('macro-ndx-dd')?.value) || 0
+                },
+                vix: parseFloat(document.getElementById('macro-vix')?.value) || 15,
+                hySpread: parseFloat(document.getElementById('macro-hy')?.value) || 300,
+                payrolls: 'flat',
+                unemployment: {
+                    rate: parseFloat(document.getElementById('macro-ue')?.value) || 4.0,
+                    change3m: 0
+                },
+                ism: 50,
+                btc: { drawdown: 0 },
+                gold: { vsHigh: 0 }
+            };
+
+            // 2. Detect Phase
+            const result = this.macroRegime.detectPhase(inputs);
+
+            // 3. Color coding based on phase
+            let bgColor = '#333';
+            let textColor = '#ccc';
+            if (result.phase === 'STRUCTURAL RESET') {
+                bgColor = '#f44336';
+                textColor = '#fff';
+            } else if (result.phase === 'MINI-RESET') {
+                bgColor = '#ff9800';
+                textColor = '#000';
+            } else if (result.phase === 'MELTUP') {
+                bgColor = '#00e676';
+                textColor = '#000';
+            } else if (result.phase === 'COMPRESSION') {
+                bgColor = '#2196f3';
+                textColor = '#fff';
+            } else if (result.phase === 'RECOVERY' || result.phase === 'BOTTOMING') {
+                bgColor = '#4caf50';
+                textColor = '#fff';
+            }
+
+            // 4. Update Top Badge (next to Live Analysis)
+            const badge = document.getElementById('macroPhaseBadgeTop');
+            if (badge) {
+                badge.textContent = result.phase;
+                badge.style.background = bgColor;
+                badge.style.color = textColor;
+            }
+
+            // 5. Update inline output
+            const output = document.getElementById('macroOutput');
+            if (output) {
+                output.innerHTML = `<span style="color: ${bgColor}; font-weight: bold;">${result.stance}</span>`;
+            }
+
+            // 6. Store result globally
+            window.lastMacroResult = result;
+            this.updateLiveAnalysisWithMacro(result);
+        };
+
+        // Run on page load
+        runDetection();
+
+        // Run on any input change
+        ['macro-spx-dd', 'macro-vix', 'macro-hy', 'macro-ue'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('input', runDetection);
+            }
+        });
+    }
+
+    updateLiveAnalysisWithMacro(macroResult) {
+        const commentaryEl = document.getElementById('commentaryText');
+        if (!commentaryEl) return;
+
+        // Prepend macro context to existing commentary
+        const existingText = commentaryEl.textContent || '';
+
+        // Build macro-aware analysis
+        let macroContext = '';
+        if (macroResult.phase === 'MINI-RESET') {
+            macroContext = `🟠 MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
+        } else if (macroResult.phase === 'STRUCTURAL RESET') {
+            macroContext = `🔴 MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
+        } else if (macroResult.phase === 'MELTUP') {
+            macroContext = `🟢 MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
+        } else {
+            macroContext = `⚪ MACRO: ${macroResult.phase} - ${macroResult.stance}. `;
+        }
+
+        // Only add if not already present
+        if (!existingText.includes('MACRO:')) {
+            commentaryEl.textContent = macroContext + existingText;
+        }
     }
 
     runDailyCycle(dataMap) {
@@ -2846,11 +3114,18 @@ class AntigravityAllocatorV92 {
     }
 }
 
-// Instantiate the Antigravity v9.2 Allocator
-const rawArcAllocator = new AntigravityAllocatorV92();
+// Initialize Allocator
+const allocator = new AntigravityAllocatorV10();
 
 // Initialize Button
 document.addEventListener('DOMContentLoaded', () => {
+    allocator.initMacroConsole(); // v10: Init Macro Console
+
+    // Initial Run (if marketData is available immediately)
+    if (window.marketData) {
+        allocator.runDailyCycle(window.marketData);
+    }
+
     // Load saved portfolio state from localStorage
     const portfolioInput = document.getElementById('portfolioInput');
     if (portfolioInput) {
@@ -2872,11 +3147,11 @@ document.addEventListener('DOMContentLoaded', () => {
             alert("Market data not ready yet. Please wait...");
             return;
         }
-        rawArcAllocator.runDailyCycle(window.marketDataCache);
+        allocator.runDailyCycle(window.marketDataCache);
     });
 
     document.getElementById('confirmChangesBtn').addEventListener('click', () => {
-        rawArcAllocator.commitChanges();
+        allocator.commitChanges();
     });
 });
 
@@ -4040,8 +4315,8 @@ const initSimulationControls = () => {
 
             try {
                 // Initialize Engine with current allocator
-                // Ensure rawArcAllocator is available globally
-                if (typeof rawArcAllocator === 'undefined') {
+                // Ensure allocator is available globally
+                if (typeof allocator === 'undefined') {
                     console.error("Allocator not initialized");
                     alert("Allocator not initialized");
                     return;
@@ -4053,7 +4328,7 @@ const initSimulationControls = () => {
                     return;
                 }
 
-                const engine = new BacktestEngine(rawArcAllocator);
+                const engine = new BacktestEngine(allocator);
 
                 // Run Backtest
                 await engine.run(scenario.tickers, 100000, scenario.start, scenario.end);

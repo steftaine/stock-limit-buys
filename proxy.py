@@ -34,13 +34,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
             req = urllib.request.Request(target_url)
             req.add_header('User-Agent', 'Mozilla/5.0')
             
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 data = response.read()
                 self.wfile.write(data)
+                print(f"✓ Successfully fetched {len(data)} bytes")
                 
+        except urllib.error.URLError as e:
+            error_msg = f"URL Error: {e.reason}"
+            print(f"Error: {error_msg}")
+            self.wfile.write(json.dumps({'error': error_msg}).encode())
         except Exception as e:
-            print(f"Error: {e}")
-            self.wfile.write(json.dumps({'error': str(e)}).encode())
+            error_msg = f"Error: {str(e)}"
+            print(error_msg)
+            self.wfile.write(json.dumps({'error': error_msg}).encode())
     
     def do_OPTIONS(self):
         self.send_response(200)
