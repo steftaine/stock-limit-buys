@@ -3566,6 +3566,78 @@ const initDashboard = async () => {
             updateTelemetry('tel-eth', closes[closes.length - 1], v => `$${v.toFixed(0)}`);
         }
 
+        // ============================================================
+        // AUTO-POPULATE MACRO INPUTS WITH REAL DATA
+        // ============================================================
+        const updateMacroInput = (id, val) => {
+            const el = document.getElementById(id);
+            if (el && val !== null && val !== undefined) {
+                el.value = val.toFixed(1);
+            }
+        };
+
+        // VIX - from ^VIX
+        if (fullDataMap['^VIX'] && fullDataMap['^VIX'].indicators.quote[0].close) {
+            const closes = fullDataMap['^VIX'].indicators.quote[0].close.filter(c => c !== null);
+            const vixCurrent = closes[closes.length - 1];
+            updateMacroInput('macro-vix', vixCurrent);
+        }
+
+        // SPX Drawdown - calculate from SPY
+        if (fullDataMap['SPY'] && fullDataMap['SPY'].indicators.quote[0].close) {
+            const closes = fullDataMap['SPY'].indicators.quote[0].close.filter(c => c !== null);
+            const current = closes[closes.length - 1];
+            const high52w = Math.max(...closes.slice(-252)); // 52-week high
+            const spxDrawdown = ((current - high52w) / high52w) * 100;
+            updateMacroInput('macro-spx-dd', spxDrawdown);
+        }
+
+        // HY Spread - we don't have this from Yahoo, leave as manual input
+        // Unemployment - we don't have this from Yahoo, leave as manual input
+
+        // Auto-run macro detection after populating with real data
+        if (typeof allocator !== 'undefined' && allocator.initMacroConsole) {
+            // Trigger a re-detection with updated values
+            const detectBtn = document.getElementById('detectPhaseBtn');
+            if (detectBtn) {
+                detectBtn.click();
+            } else {
+                // No button, just run the detection directly
+                const macroInputs = {
+                    spx: { drawdown: parseFloat(document.getElementById('macro-spx-dd')?.value) || 0 },
+                    nasdaq: { drawdown: parseFloat(document.getElementById('macro-spx-dd')?.value) || 0 }, // Use SPX as proxy
+                    vix: parseFloat(document.getElementById('macro-vix')?.value) || 15,
+                    hySpread: parseFloat(document.getElementById('macro-hy')?.value) || 300,
+                    payrolls: 'flat',
+                    unemployment: { rate: parseFloat(document.getElementById('macro-ue')?.value) || 4.0, change3m: 0 },
+                    ism: 50,
+                    btc: { drawdown: 0 },
+                    gold: { vsHigh: 0 }
+                };
+                const result = allocator.macroRegime.detectPhase(macroInputs);
+
+                // Update badge
+                const badge = document.getElementById('macroPhaseBadgeTop');
+                if (badge) {
+                    badge.textContent = result.phase;
+                    let bgColor = '#333';
+                    if (result.phase === 'STRUCTURAL RESET') bgColor = '#f44336';
+                    else if (result.phase === 'MINI-RESET') bgColor = '#ff9800';
+                    else if (result.phase === 'MELTUP') bgColor = '#00e676';
+                    else if (result.phase === 'COMPRESSION') bgColor = '#2196f3';
+                    else if (result.phase === 'RECOVERY') bgColor = '#4caf50';
+                    badge.style.background = bgColor;
+                    badge.style.color = bgColor === '#333' ? '#ccc' : (bgColor === '#ff9800' || bgColor === '#00e676' ? '#000' : '#fff');
+                }
+
+                // Update output
+                const output = document.getElementById('macroOutput');
+                if (output) {
+                    output.innerHTML = `<span style="color: #888;">${result.stance}</span>`;
+                }
+            }
+        }
+
         // Re-run specific stock analysis now that SPY is definitely available
         // AND we know the global ignition state
         const isIgnitionActive = (ignitionDetector.state === 'IGNITION ACTIVE');
