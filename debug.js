@@ -3592,8 +3592,44 @@ const initDashboard = async () => {
             updateMacroInput('macro-spx-dd', spxDrawdown);
         }
 
-        // HY Spread - we don't have this from Yahoo, leave as manual input
-        // Unemployment - we don't have this from Yahoo, leave as manual input
+        // ============================================================
+        // FRED API: HY Spread & Unemployment (async)
+        // ============================================================
+        const FRED_API_KEY = '0d3d932c6dfd4931eada54c9873f8a6d';
+
+        const fetchFredSeries = async (seriesId) => {
+            try {
+                const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&limit=1&sort_order=desc`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`FRED API error: ${response.status}`);
+                const data = await response.json();
+                if (data.observations && data.observations.length > 0) {
+                    return parseFloat(data.observations[0].value);
+                }
+                return null;
+            } catch (e) {
+                console.error(`[FRED] Error fetching ${seriesId}:`, e.message);
+                return null;
+            }
+        };
+
+        // Fetch HY Spread (BAMLH0A0HYM2 - ICE BofA US High Yield Index OAS)
+        fetchFredSeries('BAMLH0A0HYM2').then(hySpread => {
+            if (hySpread !== null) {
+                // FRED returns this in percentage points, we need basis points (multiply by 100)
+                const hyBps = hySpread * 100;
+                updateMacroInput('macro-hy', hyBps);
+                console.log(`[FRED] HY Spread: ${hyBps.toFixed(0)} bps`);
+            }
+        });
+
+        // Fetch Unemployment Rate (UNRATE)
+        fetchFredSeries('UNRATE').then(unemployment => {
+            if (unemployment !== null) {
+                updateMacroInput('macro-ue', unemployment);
+                console.log(`[FRED] Unemployment: ${unemployment.toFixed(1)}%`);
+            }
+        });
 
         // Auto-run macro detection after populating with real data
         if (typeof allocator !== 'undefined' && allocator.initMacroConsole) {
