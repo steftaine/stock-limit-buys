@@ -3573,6 +3573,8 @@ const initDashboard = async () => {
             const el = document.getElementById(id);
             if (el && val !== null && val !== undefined) {
                 el.value = val.toFixed(1);
+                // Dispatch input event to trigger auto-detection listeners
+                el.dispatchEvent(new Event('input'));
             }
         };
 
