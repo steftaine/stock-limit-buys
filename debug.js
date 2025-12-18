@@ -2970,7 +2970,10 @@ class AntigravityAllocatorV10 {
         ['macro-spx-dd', 'macro-vix', 'macro-hy', 'macro-ue'].forEach(id => {
             const el = document.getElementById(id);
             if (el) {
-                el.addEventListener('input', runDetection);
+                el.addEventListener('input', () => {
+                    console.log(`[MacroListener] Input event detected on ${id}`);
+                    runDetection();
+                });
             }
         });
     }
@@ -3575,7 +3578,10 @@ const initDashboard = async () => {
             if (el && val !== null && val !== undefined) {
                 el.value = val.toFixed(1);
                 // Dispatch input event to trigger auto-detection listeners
-                el.dispatchEvent(new Event('input', { bubbles: true }));
+                // Use timeout to ensure listeners are attached and DOM is ready
+                setTimeout(() => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                }, 0);
             } else {
                 console.warn(`[MacroUpdate] Failed to update ${id}: Element not found or invalid value`);
             }
@@ -3604,7 +3610,10 @@ const initDashboard = async () => {
 
         const fetchFredSeries = async (seriesId) => {
             try {
-                const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&limit=1&sort_order=desc`;
+                // Use a CORS proxy to bypass browser restrictions
+                const corsProxy = 'https://api.allorigins.win/raw?url=';
+                const targetUrl = encodeURIComponent(`https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&limit=1&sort_order=desc`);
+                const url = `${corsProxy}${targetUrl}`;
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`FRED API error: ${response.status}`);
                 const data = await response.json();
