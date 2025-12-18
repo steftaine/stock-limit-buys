@@ -3571,10 +3571,13 @@ const initDashboard = async () => {
         // ============================================================
         const updateMacroInput = (id, val) => {
             const el = document.getElementById(id);
+            console.log(`[MacroUpdate] Updating ${id} with ${val} (Element found: ${!!el})`);
             if (el && val !== null && val !== undefined) {
                 el.value = val.toFixed(1);
                 // Dispatch input event to trigger auto-detection listeners
-                el.dispatchEvent(new Event('input'));
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+                console.warn(`[MacroUpdate] Failed to update ${id}: Element not found or invalid value`);
             }
         };
 
