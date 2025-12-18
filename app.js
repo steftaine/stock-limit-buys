@@ -2970,7 +2970,7 @@ class AntigravityAllocatorV10 {
 
                 // Run the allocation cycle
                 console.log('[MacroConsole] Triggering allocation cycle with live macro data...');
-                this.runDailyCycle(this.userState);
+                this.runDailyCycle(window.marketDataCache);
             }
         };
 
@@ -3023,7 +3023,8 @@ class AntigravityAllocatorV10 {
                 holdings: customState.holdings || {},
                 limits: customState.limits || {},
                 blacklist: customState.blacklist || {},
-                rejectedRungs: customState.rejectedRungs || {}
+                rejectedRungs: customState.rejectedRungs || {},
+                macro: this.userState?.macro || customState.macro // Preserve live macro data
             };
         }
 
@@ -3622,7 +3623,7 @@ const initDashboard = async () => {
         const fetchFredSeries = async (seriesId) => {
             try {
                 // Use a CORS proxy to bypass browser restrictions
-                const corsProxy = 'https://api.allorigins.win/raw?url=';
+                const corsProxy = 'https://corsproxy.io/?';
                 const targetUrl = encodeURIComponent(`https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&limit=1&sort_order=desc`);
                 const url = `${corsProxy}${targetUrl}`;
                 const response = await fetch(url);
