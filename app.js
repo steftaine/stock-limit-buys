@@ -2961,6 +2961,17 @@ class AntigravityAllocatorV10 {
             // 6. Store result globally
             window.lastMacroResult = result;
             this.updateLiveAnalysisWithMacro(result);
+
+            // 7. Sync with Allocation Engine
+            // If we have market data cache (prices) and user state (portfolio), run the full cycle
+            if (window.marketDataCache && this.userState) {
+                // Update the allocator's state with live macro inputs
+                this.userState.macro = inputs;
+
+                // Run the allocation cycle
+                console.log('[MacroConsole] Triggering allocation cycle with live macro data...');
+                this.runDailyCycle(this.userState);
+            }
         };
 
         // Run on page load
